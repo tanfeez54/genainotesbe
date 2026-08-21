@@ -5,7 +5,8 @@ import type { NoteGenerationSettings } from '../types';
 if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-3.5-flash' });
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
 
 function buildPrompt(
   content: string,

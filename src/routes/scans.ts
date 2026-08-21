@@ -92,8 +92,9 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
     const buffer = Buffer.from(arrayBuffer);
     const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
 
-    // 4. Send to Gemini
-    const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+    // 4. Send to Gemini 3.5 Flash Lite (ultra-fast OCR & JSON extraction)
+    const geminiModelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+    const model = genAI.getGenerativeModel({ model: geminiModelName });
     
     const prompt = `
       You are an expert OCR and data extraction system for educational question papers.
