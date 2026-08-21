@@ -15,14 +15,14 @@ export async function authMiddleware(
 
     const token = authHeader.substring(7);
     const jwtSecret = process.env.JWT_SECRET;
-    
+
     if (!jwtSecret) {
       throw new Error('JWT_SECRET is missing');
     }
 
     const decoded = jwt.verify(token, jwtSecret) as { sub: string };
     req.userId = decoded.sub;
-    
+
     next();
   } catch (error) {
     console.error('[Auth Middleware Error]', error);

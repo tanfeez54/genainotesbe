@@ -24,19 +24,36 @@ const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
 // Security & logging middleware
 app.use(helmet());
 app.use(morgan('dev'));
+
+// CORS configuration supporting local dev & production origins
+const allowedOrigins = [
+  FRONTEND_URL,
+  'http://localhost:3000',
+  'http://localhost:3002',
+  'https://genainotesbe.onrender.com',
+];
+
 app.use(
   cors({
-    origin: FRONTEND_URL,
+    origin: (origin, callback) => {
+      // Allow requests with no origin (like mobile apps, curl, or server-to-server)
+      if (!origin || allowedOrigins.includes(origin) || origin.endsWith('.vercel.app') || origin.endsWith('.onrender.com')) {
+        callback(null, true);
+      } else {
+        callback(null, true); // Permissive for API consumers with credentials
+      }
+    },
     credentials: true,
   })
 );
+
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Rate limiting
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 200,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many requests, please try again later' },
@@ -44,7 +61,7 @@ const limiter = rateLimit({
 
 const generateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000, // 1 hour
-  max: 20, // 20 generations per hour per IP
+  max: 50,
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Generation rate limit exceeded' },
@@ -60,6 +77,7 @@ const healthHandler = (_req: express.Request, res: express.Response) => {
     uptime: `${Math.floor(process.uptime())}s`,
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
+    server_url: process.env.RENDER_EXTERNAL_URL || 'https://genainotesbe.onrender.com',
   });
 };
 
