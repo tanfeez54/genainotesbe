@@ -84,7 +84,7 @@ router.post('/signup', async (req: Request, res: Response) => {
     console.log(`🔐 LOCAL DEV: Your Signup OTP for ${email} is: ${otp}`);
     console.log(`========================================\n`);
 
-    const result = await response.json().catch(() => null);
+    const result: any = await response.json().catch(() => null);
 
     if (!response.ok || (result && result.declined > 0)) {
       console.warn('[GoodSender] Failed to send email. However, for local dev, you can use the OTP printed above!');

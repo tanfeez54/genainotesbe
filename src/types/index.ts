@@ -1,5 +1,15 @@
 // Shared TypeScript types for the backend
 
+declare global {
+  namespace Express {
+    interface Request {
+      userId?: string;
+      school_id?: string;
+      role?: string;
+    }
+  }
+}
+
 export interface Profile {
   id: string;
   full_name: string | null;

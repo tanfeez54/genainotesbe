@@ -319,7 +319,7 @@ router.post('/:id/generate', async (req: Request, res: Response) => {
   // Run pipeline in background (don't await)
   runGenerationPipeline(job.id, {
     noteId: note.id,
-    userId: req.userId,
+    userId: req.userId!,
     sourceUrl: sources[0].url,
     settings: settings ?? {},
   }).catch((err) => console.error('[Pipeline Error]', err));

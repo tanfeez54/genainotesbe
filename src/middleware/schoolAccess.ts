@@ -1,17 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { supabaseService } from '../lib/supabase';
 
-declare global {
-  namespace Express {
-    interface Request {
-      user?: any;
-      userId?: string;
-      school_id?: string;
-      role?: string;
-    }
-  }
-}
-
 /**
  * Middleware to ensure the user has access to a specific school and has the required role.
  * Expects `req.userId` to be set by the previous `authMiddleware`.
@@ -35,7 +24,7 @@ export const requireSchoolAccess = (allowedRoles: string[] = ['super_admin', 'sc
         .eq('is_active', true);
 
       if (requestedSchoolId) {
-        query = query.eq('school_id', requestedSchoolId);
+        query = query.eq('school_id', requestedSchoolId as string);
       }
 
       const { data: schoolUsers, error } = await query;

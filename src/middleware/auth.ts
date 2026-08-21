@@ -1,15 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 
-// Extend Express Request type to include userId
-declare global {
-  namespace Express {
-    interface Request {
-      userId: string;
-    }
-  }
-}
-
 export async function authMiddleware(
   req: Request,
   res: Response,

@@ -52,10 +52,20 @@ const generateLimiter = rateLimit({
 
 app.use('/api', limiter);
 
-// Health check
-app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
-});
+// Health Check Endpoints (Root & /health & /api/health)
+const healthHandler = (_req: express.Request, res: express.Response) => {
+  res.status(200).json({
+    status: 'healthy',
+    service: 'SchoolPapers AI Backend API',
+    uptime: `${Math.floor(process.uptime())}s`,
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+  });
+};
+
+app.get('/', healthHandler);
+app.get('/health', healthHandler);
+app.get('/api/health', healthHandler);
 
 // Protected API routes
 app.use('/api/notes/:id/generate', generateLimiter);
