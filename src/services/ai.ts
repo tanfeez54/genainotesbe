@@ -264,15 +264,23 @@ For Match the Following ('match_the_following'):
 {
   "section_name": "Section D: Match the Following",
   "type": "match_the_following",
-  "question_text": "Match the items in Column A with their correct definitions in Column B:\nColumn A:\n1. Chlorophyll\n2. Stomata\n3. Xylem\n4. Phloem\n\nColumn B:\np. Gas exchange\nq. Water transport\nr. Food transport\ns. Green pigment",
-  "options": [
-    { "label": "1", "text": "Chlorophyll -> s. Green pigment" },
-    { "label": "2", "text": "Stomata -> p. Gas exchange" },
-    { "label": "3", "text": "Xylem -> q. Water transport" },
-    { "label": "4", "text": "Phloem -> r. Food transport" }
-  ],
+  "question_text": "Match the items in Column A with their correct corresponding items in Column B:",
+  "options": {
+    "column_a": [
+      { "label": "1", "text": "Chlorophyll" },
+      { "label": "2", "text": "Stomata" },
+      { "label": "3", "text": "Xylem" },
+      { "label": "4", "text": "Phloem" }
+    ],
+    "column_b": [
+      { "label": "A", "text": "Gas exchange" },
+      { "label": "B", "text": "Food transport" },
+      { "label": "C", "text": "Green pigment" },
+      { "label": "D", "text": "Water transport" }
+    ]
+  },
   "correct_option": null,
-  "answer_text": "1 - s, 2 - p, 3 - q, 4 - r",
+  "answer_text": "1 - C, 2 - A, 3 - D, 4 - B",
   "image_url": null,
   "marks": 4,
   "difficulty": "medium",
