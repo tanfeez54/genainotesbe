@@ -11,7 +11,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 router.get('/', requireSchoolAccess(), async (req: Request, res: Response): Promise<void> => {
   const { data, error } = await supabaseService
     .from('scanned_documents')
-    .select('*, chapters(title, subjects(name, classes(name)))')
+    .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
     .eq('school_id', req.school_id)
     .order('created_at', { ascending: false });
 
@@ -22,37 +22,86 @@ router.get('/', requireSchoolAccess(), async (req: Request, res: Response): Prom
   res.json({ data });
 });
 
-// POST /api/scans — Create a new scan record
+// POST /api/scans — Create a new scan record with STRICT Class/Subject/Chapter validation
 router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
-  const schema = z.object({
-    image_url: z.string().url(),
-    doc_type: z.enum(['question_paper', 'chapter_page']),
-    chapter_id: z.string().uuid().optional(),
-  });
+  try {
+    const schema = z.object({
+      image_url: z.string().min(1, 'Image URL or base64 data is required'),
+      doc_type: z.enum(['question_paper', 'chapter_page']).default('question_paper'),
+      chapter_id: z.string().uuid().optional(),
+      chapter_name: z.string().min(1).optional(),
+      subject_id: z.string().uuid().optional(),
+      class_id: z.string().uuid().optional(),
+    });
 
-  const parsed = schema.safeParse(req.body);
-  if (!parsed.success) {
-    res.status(400).json({ error: parsed.error.flatten() });
-    return;
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed: Class, Subject and Chapter are required', details: parsed.error.flatten() });
+      return;
+    }
+
+    let finalChapterId = parsed.data.chapter_id;
+
+    // If chapter_name & subject_id are provided, resolve or create chapter
+    if (!finalChapterId && parsed.data.chapter_name && parsed.data.subject_id) {
+      // Check if chapter exists with same title in this subject
+      const { data: existingChapter } = await supabaseService
+        .from('chapters')
+        .select('id')
+        .eq('school_id', req.school_id)
+        .eq('subject_id', parsed.data.subject_id)
+        .ilike('title', parsed.data.chapter_name.trim())
+        .maybeSingle();
+
+      if (existingChapter) {
+        finalChapterId = existingChapter.id;
+      } else {
+        // Create new chapter
+        const { data: newChapter, error: createChapterError } = await supabaseService
+          .from('chapters')
+          .insert({
+            school_id: req.school_id,
+            subject_id: parsed.data.subject_id,
+            title: parsed.data.chapter_name.trim(),
+          })
+          .select('id')
+          .single();
+
+        if (createChapterError || !newChapter) {
+          res.status(500).json({ error: 'Failed to create chapter for scan', details: createChapterError?.message });
+          return;
+        }
+        finalChapterId = newChapter.id;
+      }
+    }
+
+    if (!finalChapterId) {
+      res.status(400).json({ error: 'Chapter is strictly required. Please select or provide a chapter name.' });
+      return;
+    }
+
+    const { data, error } = await supabaseService
+      .from('scanned_documents')
+      .insert({
+        image_url: parsed.data.image_url,
+        doc_type: parsed.data.doc_type,
+        chapter_id: finalChapterId,
+        school_id: req.school_id,
+        uploaded_by: req.userId,
+        status: 'pending'
+      })
+      .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+
+    res.status(201).json({ data, chapter_id: finalChapterId });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Server error creating scan' });
   }
-
-  const { data, error } = await supabaseService
-    .from('scanned_documents')
-    .insert({
-      ...parsed.data,
-      school_id: req.school_id,
-      uploaded_by: req.userId,
-      status: 'pending'
-    })
-    .select()
-    .single();
-
-  if (error) {
-    res.status(500).json({ error: error.message });
-    return;
-  }
-
-  res.status(201).json({ data });
 });
 
 // POST /api/scans/:id/process — Trigger OCR via Gemini
@@ -63,13 +112,18 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
     // 1. Fetch the scan record
     const { data: scan, error: scanError } = await supabaseService
       .from('scanned_documents')
-      .select('*')
+      .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
       .eq('id', id)
       .eq('school_id', req.school_id)
       .single();
 
     if (scanError || !scan) {
-      res.status(404).json({ error: 'Scan not found' });
+      res.status(404).json({ error: 'Scan record not found' });
+      return;
+    }
+
+    if (!scan.chapter_id) {
+      res.status(400).json({ error: 'Cannot process scan without an assigned Chapter.' });
       return;
     }
 
@@ -84,56 +138,98 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
       .update({ status: 'processing' })
       .eq('id', id);
 
-    // 3. Fetch image from URL
-    const imageResponse = await fetch(scan.image_url);
-    if (!imageResponse.ok) throw new Error('Failed to download image from URL');
-    
-    const arrayBuffer = await imageResponse.arrayBuffer();
-    const buffer = Buffer.from(arrayBuffer);
-    const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
+    // 3. Obtain image buffer (supports base64 data URL or HTTP URL)
+    let buffer: Buffer;
+    let mimeType = 'image/jpeg';
 
-    // 4. Send to Gemini 3.5 Flash Lite (ultra-fast OCR & JSON extraction)
-    const geminiModelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
+    if (scan.image_url.startsWith('data:')) {
+      const parts = scan.image_url.split(',');
+      const mimeMatch = parts[0].match(/:(.*?);/);
+      if (mimeMatch) mimeType = mimeMatch[1];
+      buffer = Buffer.from(parts[1], 'base64');
+    } else {
+      const imageResponse = await fetch(scan.image_url);
+      if (!imageResponse.ok) throw new Error('Failed to download image from URL');
+      const arrayBuffer = await imageResponse.arrayBuffer();
+      buffer = Buffer.from(arrayBuffer);
+      mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
+    }
+
+    // 4. Send to Gemini for Educational OCR & Question Extraction
+    const geminiModelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
     const model = genAI.getGenerativeModel({ model: geminiModelName });
-    
-    const prompt = `
-      You are an expert OCR and data extraction system for educational question papers.
-      Analyze the provided image (which is a school test paper or textbook page).
-      Extract ALL the questions, their associated answers (if provided or if you can reliably infer a short one, otherwise leave blank), and marks.
-      
-      Return the extracted data as a JSON array where each object has:
-      {
-        "question_text": "The full text of the question",
-        "question_type": "mcq" | "short_answer" | "long_answer" | "true_false" | "fill_blanks",
-        "options": ["A", "B", "C", "D"], // Only if it's an MCQ, otherwise null or empty array
-        "marks": 5, // A number representing the marks, if visible. If not visible, guess based on length (1 for MCQ, 2 for short, 5 for long)
-        "answer_text": "The answer" // Optional
-      }
 
-      Do NOT return markdown formatting like \`\`\`json. Return ONLY valid JSON array.
-    `;
+    const prompt = `
+You are an expert OCR and exam question extractor system for educational test papers and textbooks in Indian schools (CBSE, ICSE, State Boards).
+Carefully read the provided image (which is a captured photo or scan of an exam paper, question sheet, or textbook page in English, Hindi, or bilingual).
+
+Your task:
+1. Extract ALL questions and sub-questions clearly without missing any.
+2. For each question, extract or structure:
+   - "question_text": The complete text of the question (preserve mathematical equations, formulas, formatting, Hindi or English script).
+   - "question_type": One of: "mcq" | "short_answer" | "long_answer" | "true_false" | "fill_blank" | "match_the_following"
+   - "options": An array of strings representing options if it is an MCQ (e.g. ["Option A text", "Option B text", "Option C text", "Option D text"]), or null if not an MCQ.
+   - "marks": A number representing the marks indicated for the question. If not explicitly specified on the paper, estimate reasonably (1 for MCQ/fill-in-the-blank, 2-3 for short answer, 5 for long answer).
+   - "difficulty": "easy" | "medium" | "hard"
+   - "answer_text": The correct answer or a concise model solution if stated or easily inferred.
+   - "correct_option": If MCQ, indicate the correct option letter (e.g. "A", "B", "C", "D") or null.
+
+Return ONLY a valid JSON array of question objects matching this exact format:
+[
+  {
+    "question_text": "string",
+    "question_type": "mcq",
+    "options": ["Option A", "Option B", "Option C", "Option D"],
+    "marks": 1,
+    "difficulty": "medium",
+    "answer_text": "Option A explanation",
+    "correct_option": "A"
+  }
+]
+
+Do NOT return any markdown wrapping like \`\`\`json. Return purely the valid JSON array.
+`;
 
     const result = await model.generateContent([
       prompt,
       {
         inlineData: {
           data: buffer.toString('base64'),
-          mimeType
+          mimeType: mimeType.split(';')[0].trim() || 'image/jpeg'
         }
       }
     ]);
 
     const text = result.response.text();
-    
-    // Clean up markdown if Gemini adds it accidentally
-    let jsonStr = text.trim();
-    if (jsonStr.startsWith('```json')) jsonStr = jsonStr.substring(7);
-    if (jsonStr.startsWith('```')) jsonStr = jsonStr.substring(3);
-    if (jsonStr.endsWith('```')) jsonStr = jsonStr.substring(0, jsonStr.length - 3);
-    
-    const extractedData = JSON.parse(jsonStr.trim());
 
-    // 5. Save results
+    // Clean up possible markdown code blocks
+    let jsonStr = text.trim()
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/i, '')
+      .trim();
+
+    let extractedData: any[] = [];
+    try {
+      extractedData = JSON.parse(jsonStr);
+      if (!Array.isArray(extractedData)) {
+        if (typeof extractedData === 'object' && Array.isArray((extractedData as any).questions)) {
+          extractedData = (extractedData as any).questions;
+        } else {
+          extractedData = [extractedData];
+        }
+      }
+    } catch (parseErr) {
+      console.warn('Failed to parse clean JSON array from Gemini, attempting fallback regex extract', parseErr);
+      const match = jsonStr.match(/\[[\s\S]*\]/);
+      if (match) {
+        extractedData = JSON.parse(match[0]);
+      } else {
+        throw new Error('AI could not format OCR output as structured questions. Raw text: ' + text.substring(0, 200));
+      }
+    }
+
+    // 5. Save results to scanned_documents
     const { data: updatedScan, error: updateError } = await supabaseService
       .from('scanned_documents')
       .update({
@@ -143,25 +239,30 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
         processed_at: new Date().toISOString()
       })
       .eq('id', id)
-      .select()
+      .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
       .single();
 
     if (updateError) throw updateError;
 
-    res.json({ message: 'Processed successfully', data: updatedScan });
+    res.json({
+      message: 'OCR extraction successful',
+      count: extractedData.length,
+      data: updatedScan,
+      questions: extractedData
+    });
   } catch (error: any) {
     console.error('OCR Processing Error:', error);
-    
+
     // Mark as failed
     await supabaseService
       .from('scanned_documents')
-      .update({ 
-        status: 'failed', 
-        error_message: error.message || 'Unknown error during OCR' 
+      .update({
+        status: 'failed',
+        error_message: error.message || 'Unknown error during OCR'
       })
       .eq('id', req.params.id);
 
-    res.status(500).json({ error: 'Failed to process document', details: error.message });
+    res.status(500).json({ error: 'Failed to process document with OCR', details: error.message });
   }
 });
 
@@ -169,7 +270,7 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
 router.get('/:id', requireSchoolAccess(), async (req: Request, res: Response): Promise<void> => {
   const { data, error } = await supabaseService
     .from('scanned_documents')
-    .select('*, chapters(title, subjects(name, classes(name)))')
+    .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
     .eq('id', req.params.id)
     .eq('school_id', req.school_id)
     .single();
