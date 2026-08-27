@@ -156,7 +156,7 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
     }
 
     // 4. Send to Gemini for Complete Verbatim OCR Text Extraction
-    const geminiModelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
+    const geminiModelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
     const model = genAI.getGenerativeModel({ model: geminiModelName });
 
     const prompt = `You are an expert OCR transcription engine.
