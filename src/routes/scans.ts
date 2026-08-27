@@ -9,11 +9,18 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
 // GET /api/scans — list school's scans
 router.get('/', requireSchoolAccess(), async (req: Request, res: Response): Promise<void> => {
-  const { data, error } = await supabaseService
+  let query = supabaseService
     .from('scanned_documents')
     .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
-    .eq('school_id', req.school_id)
-    .order('created_at', { ascending: false });
+    .eq('school_id', req.school_id);
+
+  if (req.query.chapter_id) {
+    query = query.eq('chapter_id', String(req.query.chapter_id)).order('created_at', { ascending: true });
+  } else {
+    query = query.order('created_at', { ascending: false });
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     res.status(500).json({ error: error.message });
