@@ -156,6 +156,7 @@ export interface GeneratedQuestionItem {
   options?: { label: string; text: string }[] | null;
   correct_option?: string | null;
   answer_text?: string | null;
+  image_url?: string | null;
   marks: number;
   difficulty: 'easy' | 'medium' | 'hard';
   chapter_title?: string;
@@ -167,6 +168,14 @@ export async function generateQuestionsWithAI(
   const chaptersStr = config.chapterTitles && config.chapterTitles.length > 0
     ? config.chapterTitles.join(', ')
     : 'All Chapters / General Syllabus';
+
+  const equalWeightagePrompt = config.chapterTitles && config.chapterTitles.length > 1
+    ? `\nEQUAL CHAPTER WEIGHTAGE MANDATE:
+- The user has selected ${config.chapterTitles.length} chapters: [${config.chapterTitles.join(', ')}].
+- You MUST allocate questions and marks EQUALLY among all ${config.chapterTitles.length} selected chapters.
+- Ensure each selected chapter contributes approximately equal total marks across the entire question paper.
+- Tag each question with its exact corresponding chapter title in the "chapter_title" property.`
+    : '';
 
   const sectionsDesc = config.sections
     .map(
@@ -187,13 +196,14 @@ export async function generateQuestionsWithAI(
     ? `\nSpecial Instructions: ${config.customInstructions}`
     : '';
 
-  const prompt = `You are a strict academic question paper extractor & generator.
+  const prompt = `You are a strict academic question paper extractor & generator for CBSE / ICSE / State Board schools.
 Create a high-quality, comprehensive examination question paper.
 
 CLASS / GRADE: ${config.className}
 SUBJECT: ${config.subjectName}
-CHAPTERS / SYLLABUS: ${chaptersStr}
+SELECTED CHAPTERS: ${chaptersStr}
 LANGUAGE: ${config.language || 'English'}
+${equalWeightagePrompt}
 ${strictGroundingRule}${customPrompt}${contextPrompt}
 
 BLUEPRINT SPECIFICATIONS:
@@ -206,7 +216,7 @@ STRICT JSON OUTPUT REQUIREMENTS:
   {
     "section_name": "Section A - Multiple Choice Questions",
     "type": "mcq",
-    "question_text": "Complete question text clearly stated from the scanned document",
+    "question_text": "Complete question text clearly stated",
     "options": [
       { "label": "A", "text": "Option text" },
       { "label": "B", "text": "Option text" },
@@ -214,7 +224,8 @@ STRICT JSON OUTPUT REQUIREMENTS:
       { "label": "D", "text": "Option text" }
     ],
     "correct_option": "A",
-    "answer_text": "Explanation and correct answer from document",
+    "answer_text": "Explanation and correct answer",
+    "image_url": null,
     "marks": 1,
     "difficulty": "easy",
     "chapter_title": "Chapter name"
@@ -222,17 +233,18 @@ STRICT JSON OUTPUT REQUIREMENTS:
   {
     "section_name": "Section B - Short Answer Questions",
     "type": "short_answer",
-    "question_text": "Short answer question text from the scanned document",
+    "question_text": "Short answer question text",
     "options": null,
     "correct_option": null,
     "answer_text": "Detailed model answer / points expected for grading",
+    "image_url": null,
     "marks": 3,
     "difficulty": "medium",
     "chapter_title": "Chapter name"
   }
 ]
 
-Generate pedagogical, error-free, and syllabus-appropriate questions strictly grounded in the scanned document.`;
+Generate pedagogical, error-free, balanced questions with equal marks distribution across all selected chapters.`;
 
   const result = await model.generateContent(prompt);
   const rawText = result.response.text().trim();
@@ -254,6 +266,7 @@ Generate pedagogical, error-free, and syllabus-appropriate questions strictly gr
         options: item.options || null,
         correct_option: item.correct_option || null,
         answer_text: item.answer_text || null,
+        image_url: item.image_url || null,
         marks: Number(item.marks) || 1,
         difficulty: item.difficulty || 'medium',
         chapter_title: item.chapter_title || '',
