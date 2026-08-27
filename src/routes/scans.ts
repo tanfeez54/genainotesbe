@@ -87,10 +87,46 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
       return;
     }
 
+    let finalFileUrl = parsed.data.image_url;
+
+    // If image_url is a base64 data URL, upload to Supabase Storage to get a direct public URL
+    if (parsed.data.image_url.startsWith('data:')) {
+      try {
+        const parts = parsed.data.image_url.split(',');
+        const mimeMatch = parts[0].match(/:(.*?);/);
+        const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
+        const isPdf = mimeType.includes('pdf');
+        const ext = isPdf ? 'pdf' : mimeType.includes('png') ? 'png' : 'jpg';
+        const fileBuffer = Buffer.from(parts[1], 'base64');
+        const filePath = `scans/${req.school_id}/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
+
+        const { data: uploadData, error: uploadErr } = await supabaseService.storage
+          .from('school_assets')
+          .upload(filePath, fileBuffer, {
+            contentType: mimeType,
+            upsert: true,
+          });
+
+        if (!uploadErr) {
+          const { data: publicUrlData } = supabaseService.storage
+            .from('school_assets')
+            .getPublicUrl(filePath);
+
+          if (publicUrlData?.publicUrl) {
+            finalFileUrl = publicUrlData.publicUrl;
+          }
+        } else {
+          console.warn('Storage bucket upload notice:', uploadErr.message);
+        }
+      } catch (storageErr) {
+        console.warn('Storage upload catch:', storageErr);
+      }
+    }
+
     const { data, error } = await supabaseService
       .from('scanned_documents')
       .insert({
-        image_url: parsed.data.image_url,
+        image_url: finalFileUrl,
         doc_type: parsed.data.doc_type,
         chapter_id: finalChapterId,
         school_id: req.school_id,
