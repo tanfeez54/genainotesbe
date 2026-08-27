@@ -3,6 +3,7 @@ import { supabaseService } from '../lib/supabase';
 import { z } from 'zod';
 import { requireSchoolAccess } from '../middleware/schoolAccess';
 import { GoogleGenerativeAI } from '@google/generative-ai';
+import { uploadToStorage, deleteFromStorage } from '../lib/r2';
 
 const router = Router();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
@@ -89,7 +90,7 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
 
     let finalFileUrl = parsed.data.image_url;
 
-    // If image_url is a base64 data URL, upload to Supabase Storage to get a direct public URL
+    // If image_url is a base64 data URL, upload to Cloudflare R2 / Storage CDN to get a direct public URL
     if (parsed.data.image_url.startsWith('data:')) {
       try {
         const parts = parsed.data.image_url.split(',');
@@ -100,23 +101,9 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
         const fileBuffer = Buffer.from(parts[1], 'base64');
         const filePath = `scans/${req.school_id}/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
 
-        const { data: uploadData, error: uploadErr } = await supabaseService.storage
-          .from('school_assets')
-          .upload(filePath, fileBuffer, {
-            contentType: mimeType,
-            upsert: true,
-          });
-
-        if (!uploadErr) {
-          const { data: publicUrlData } = supabaseService.storage
-            .from('school_assets')
-            .getPublicUrl(filePath);
-
-          if (publicUrlData?.publicUrl) {
-            finalFileUrl = publicUrlData.publicUrl;
-          }
-        } else {
-          console.warn('Storage bucket upload notice:', uploadErr.message);
+        const uploadedUrl = await uploadToStorage(fileBuffer, filePath, mimeType);
+        if (uploadedUrl) {
+          finalFileUrl = uploadedUrl;
         }
       } catch (storageErr) {
         console.warn('Storage upload catch:', storageErr);
@@ -334,6 +321,71 @@ router.get('/:id', requireSchoolAccess(), async (req: Request, res: Response): P
     return;
   }
   res.json({ data });
+});
+
+// DELETE /api/scans/:id — Delete scan record, remove image/PDF from R2/Storage, and resync chapter content
+router.delete('/:id', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    // 1. Fetch scan to get file URL and chapter_id
+    const { data: scan, error: fetchErr } = await supabaseService
+      .from('scanned_documents')
+      .select('id, image_url, chapter_id')
+      .eq('id', id)
+      .eq('school_id', req.school_id)
+      .single();
+
+    if (fetchErr || !scan) {
+      res.status(404).json({ error: 'Scan document not found' });
+      return;
+    }
+
+    // 2. Delete file from Cloudflare R2 / Storage CDN
+    if (scan.image_url) {
+      await deleteFromStorage(scan.image_url);
+    }
+
+    // 3. Delete row from scanned_documents in DB
+    const { error: delErr } = await supabaseService
+      .from('scanned_documents')
+      .delete()
+      .eq('id', id)
+      .eq('school_id', req.school_id);
+
+    if (delErr) {
+      res.status(500).json({ error: delErr.message });
+      return;
+    }
+
+    // 4. Re-sync chapter content_text by combining all remaining scans for this chapter
+    if (scan.chapter_id) {
+      try {
+        const { data: remainingScans } = await supabaseService
+          .from('scanned_documents')
+          .select('raw_ocr_text')
+          .eq('chapter_id', scan.chapter_id)
+          .neq('status', 'failed')
+          .order('created_at', { ascending: true });
+
+        const combinedText = (remainingScans || [])
+          .map((s: any) => s.raw_ocr_text)
+          .filter(Boolean)
+          .join('\n\n');
+
+        await supabaseService
+          .from('chapters')
+          .update({ content_text: combinedText || null })
+          .eq('id', scan.chapter_id);
+      } catch (syncErr) {
+        console.error('Error re-syncing chapter text after scan deletion:', syncErr);
+      }
+    }
+
+    res.json({ message: 'Scanned document and image deleted successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || 'Failed to delete scan' });
+  }
 });
 
 export default router;
