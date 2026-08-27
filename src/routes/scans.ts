@@ -155,40 +155,15 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
       mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
     }
 
-    // 4. Send to Gemini for Educational OCR & Question Extraction
+    // 4. Send to Gemini for Complete Verbatim OCR Text Extraction
     const geminiModelName = process.env.GEMINI_MODEL || 'gemini-1.5-flash';
     const model = genAI.getGenerativeModel({ model: geminiModelName });
 
-    const prompt = `
-You are an expert OCR and exam question extractor system for educational test papers and textbooks in Indian schools (CBSE, ICSE, State Boards).
-Carefully read the provided image (which is a captured photo or scan of an exam paper, question sheet, or textbook page in English, Hindi, or bilingual).
-
-Your task:
-1. Extract ALL questions and sub-questions clearly without missing any.
-2. For each question, extract or structure:
-   - "question_text": The complete text of the question (preserve mathematical equations, formulas, formatting, Hindi or English script).
-   - "question_type": One of: "mcq" | "short_answer" | "long_answer" | "true_false" | "fill_blank" | "match_the_following"
-   - "options": An array of strings representing options if it is an MCQ (e.g. ["Option A text", "Option B text", "Option C text", "Option D text"]), or null if not an MCQ.
-   - "marks": A number representing the marks indicated for the question. If not explicitly specified on the paper, estimate reasonably (1 for MCQ/fill-in-the-blank, 2-3 for short answer, 5 for long answer).
-   - "difficulty": "easy" | "medium" | "hard"
-   - "answer_text": The correct answer or a concise model solution if stated or easily inferred.
-   - "correct_option": If MCQ, indicate the correct option letter (e.g. "A", "B", "C", "D") or null.
-
-Return ONLY a valid JSON array of question objects matching this exact format:
-[
-  {
-    "question_text": "string",
-    "question_type": "mcq",
-    "options": ["Option A", "Option B", "Option C", "Option D"],
-    "marks": 1,
-    "difficulty": "medium",
-    "answer_text": "Option A explanation",
-    "correct_option": "A"
-  }
-]
-
-Do NOT return any markdown wrapping like \`\`\`json. Return purely the valid JSON array.
-`;
+    const prompt = `You are an expert OCR transcription engine.
+Transcribe and extract the ENTIRE text from the provided image accurately, verbatim, and completely.
+- Preserve all original headings, paragraphs, bullet points, numbered lists, equations, formulas, tables, and Hindi / English text exactly as they appear on the page.
+- Do NOT skip, summarize, or alter any text.
+- Return the extracted raw text directly.`;
 
     const result = await model.generateContent([
       prompt,
@@ -200,42 +175,14 @@ Do NOT return any markdown wrapping like \`\`\`json. Return purely the valid JSO
       }
     ]);
 
-    const text = result.response.text();
+    const extractedText = result.response.text().trim();
 
-    // Clean up possible markdown code blocks
-    let jsonStr = text.trim()
-      .replace(/^```json\s*/i, '')
-      .replace(/^```\s*/i, '')
-      .replace(/\s*```$/i, '')
-      .trim();
-
-    let extractedData: any[] = [];
-    try {
-      extractedData = JSON.parse(jsonStr);
-      if (!Array.isArray(extractedData)) {
-        if (typeof extractedData === 'object' && Array.isArray((extractedData as any).questions)) {
-          extractedData = (extractedData as any).questions;
-        } else {
-          extractedData = [extractedData];
-        }
-      }
-    } catch (parseErr) {
-      console.warn('Failed to parse clean JSON array from Gemini, attempting fallback regex extract', parseErr);
-      const match = jsonStr.match(/\[[\s\S]*\]/);
-      if (match) {
-        extractedData = JSON.parse(match[0]);
-      } else {
-        throw new Error('AI could not format OCR output as structured questions. Raw text: ' + text.substring(0, 200));
-      }
-    }
-
-    // 5. Save results to scanned_documents
+    // 5. Save verbatim extracted text to scanned_documents
     const { data: updatedScan, error: updateError } = await supabaseService
       .from('scanned_documents')
       .update({
         status: 'ocr_completed',
-        raw_ocr_json: extractedData,
-        raw_ocr_text: text,
+        raw_ocr_text: extractedText,
         processed_at: new Date().toISOString()
       })
       .eq('id', id)
@@ -245,10 +192,9 @@ Do NOT return any markdown wrapping like \`\`\`json. Return purely the valid JSO
     if (updateError) throw updateError;
 
     res.json({
-      message: 'OCR extraction successful',
-      count: extractedData.length,
-      data: updatedScan,
-      questions: extractedData
+      message: 'Text extracted successfully',
+      raw_ocr_text: extractedText,
+      data: updatedScan
     });
   } catch (error: any) {
     console.error('OCR Processing Error:', error);
@@ -263,6 +209,35 @@ Do NOT return any markdown wrapping like \`\`\`json. Return purely the valid JSO
       .eq('id', req.params.id);
 
     res.status(500).json({ error: 'Failed to process document with OCR', details: error.message });
+  }
+});
+
+// PATCH /api/scans/:id — Update extracted text or chapter mapping
+router.patch('/:id', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+    const { raw_ocr_text, chapter_id, status } = req.body;
+
+    const updatePayload: any = {};
+    if (raw_ocr_text !== undefined) updatePayload.raw_ocr_text = raw_ocr_text;
+    if (chapter_id !== undefined) updatePayload.chapter_id = chapter_id;
+    if (status !== undefined) updatePayload.status = status;
+
+    const { data, error } = await supabaseService
+      .from('scanned_documents')
+      .update(updatePayload)
+      .eq('id', id)
+      .eq('school_id', req.school_id)
+      .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
+      .single();
+
+    if (error) {
+      res.status(500).json({ error: error.message });
+      return;
+    }
+    res.json({ data, message: 'Extracted text saved successfully' });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
   }
 });
 
