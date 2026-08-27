@@ -198,6 +198,28 @@ Transcribe and extract the ENTIRE text from the provided image accurately, verba
 
     if (updateError) throw updateError;
 
+    // 6. Automatically sync with chapter content_text so it previews in the chapter
+    if (scan.chapter_id && extractedText) {
+      try {
+        const { data: existingChap } = await supabaseService
+          .from('chapters')
+          .select('content_text')
+          .eq('id', scan.chapter_id)
+          .maybeSingle();
+
+        const combinedText = existingChap?.content_text
+          ? `${existingChap.content_text}\n\n${extractedText}`
+          : extractedText;
+
+        await supabaseService
+          .from('chapters')
+          .update({ content_text: combinedText })
+          .eq('id', scan.chapter_id);
+      } catch (syncErr) {
+        console.error('Error syncing chapter content_text:', syncErr);
+      }
+    }
+
     res.json({
       message: 'Text extracted successfully',
       raw_ocr_text: extractedText,
@@ -242,6 +264,20 @@ router.patch('/:id', requireSchoolAccess(['super_admin', 'school_admin', 'teache
       res.status(500).json({ error: error.message });
       return;
     }
+
+    // Sync chapter content_text if text or chapter updated
+    const targetChapterId = chapter_id || data?.chapter_id;
+    if (targetChapterId && raw_ocr_text) {
+      try {
+        await supabaseService
+          .from('chapters')
+          .update({ content_text: raw_ocr_text })
+          .eq('id', targetChapterId);
+      } catch (e) {
+        console.error('Error updating chapter content text:', e);
+      }
+    }
+
     res.json({ data, message: 'Extracted text saved successfully' });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
