@@ -211,38 +211,101 @@ ${sectionsDesc}
 
 STRICT JSON OUTPUT REQUIREMENTS:
 1. Return ONLY a valid JSON array of question objects (no markdown wrapping, no extra prose).
-2. Each object MUST match this schema:
-[
-  {
-    "section_name": "Section A - Multiple Choice Questions",
-    "type": "mcq",
-    "question_text": "Complete question text clearly stated",
-    "options": [
-      { "label": "A", "text": "Option text" },
-      { "label": "B", "text": "Option text" },
-      { "label": "C", "text": "Option text" },
-      { "label": "D", "text": "Option text" }
-    ],
-    "correct_option": "A",
-    "answer_text": "Explanation and correct answer",
-    "image_url": null,
-    "marks": 1,
-    "difficulty": "easy",
-    "chapter_title": "Chapter name"
-  },
-  {
-    "section_name": "Section B - Short Answer Questions",
-    "type": "short_answer",
-    "question_text": "Short answer question text",
-    "options": null,
-    "correct_option": null,
-    "answer_text": "Detailed model answer / points expected for grading",
-    "image_url": null,
-    "marks": 3,
-    "difficulty": "medium",
-    "chapter_title": "Chapter name"
-  }
-]
+2. Each object MUST match this schema according to its type:
+
+For MCQ ('mcq'):
+{
+  "section_name": "Section A: Multiple Choice Questions",
+  "type": "mcq",
+  "question_text": "Which organelle is known as the powerhouse of the cell?",
+  "options": [
+    { "label": "A", "text": "Ribosome" },
+    { "label": "B", "text": "Mitochondria" },
+    { "label": "C", "text": "Nucleus" },
+    { "label": "D", "text": "Golgi Apparatus" }
+  ],
+  "correct_option": "B",
+  "answer_text": "B) Mitochondria generates most of the chemical energy needed by the cell.",
+  "image_url": null,
+  "marks": 1,
+  "difficulty": "easy",
+  "chapter_title": "Cell Structure and Functions"
+}
+
+For Fill in the Blanks ('fill_blank'):
+{
+  "section_name": "Section B: Fill in the Blanks",
+  "type": "fill_blank",
+  "question_text": "The process of food synthesis in green plants is called _______ using sunlight and chlorophyll.",
+  "options": null,
+  "correct_option": null,
+  "answer_text": "Photosynthesis",
+  "image_url": null,
+  "marks": 1,
+  "difficulty": "easy",
+  "chapter_title": "Nutrition in Plants"
+}
+
+For True / False ('true_false'):
+{
+  "section_name": "Section C: True or False",
+  "type": "true_false",
+  "question_text": "Light travels in a straight line through a uniform transparent medium.",
+  "options": null,
+  "correct_option": "True",
+  "answer_text": "True. Light exhibits rectilinear propagation in a homogeneous medium.",
+  "image_url": null,
+  "marks": 1,
+  "difficulty": "easy",
+  "chapter_title": "Light and Reflection"
+}
+
+For Match the Following ('match_the_following'):
+{
+  "section_name": "Section D: Match the Following",
+  "type": "match_the_following",
+  "question_text": "Match the items in Column A with their correct definitions in Column B:\nColumn A:\n1. Chlorophyll\n2. Stomata\n3. Xylem\n4. Phloem\n\nColumn B:\np. Gas exchange\nq. Water transport\nr. Food transport\ns. Green pigment",
+  "options": [
+    { "label": "1", "text": "Chlorophyll -> s. Green pigment" },
+    { "label": "2", "text": "Stomata -> p. Gas exchange" },
+    { "label": "3", "text": "Xylem -> q. Water transport" },
+    { "label": "4", "text": "Phloem -> r. Food transport" }
+  ],
+  "correct_option": null,
+  "answer_text": "1 - s, 2 - p, 3 - q, 4 - r",
+  "image_url": null,
+  "marks": 4,
+  "difficulty": "medium",
+  "chapter_title": "Transportation in Animals and Plants"
+}
+
+For Short Answer ('short_answer'):
+{
+  "section_name": "Section E: Short Answer Questions",
+  "type": "short_answer",
+  "question_text": "Differentiate between autotrophic and heterotrophic nutrition with one example each.",
+  "options": null,
+  "correct_option": null,
+  "answer_text": "Autotrophs produce their own food (e.g., green plants), whereas heterotrophs depend on others for food (e.g., animals/fungi).",
+  "image_url": null,
+  "marks": 3,
+  "difficulty": "medium",
+  "chapter_title": "Life Processes"
+}
+
+For Long Answer ('long_answer'):
+{
+  "section_name": "Section F: Long Answer Questions",
+  "type": "long_answer",
+  "question_text": "Explain Newton's Three Laws of Motion with suitable everyday examples and mathematical formulations.",
+  "options": null,
+  "correct_option": null,
+  "answer_text": "1. First Law (Inertia)... 2. Second Law (F = ma)... 3. Third Law (Action-Reaction)...",
+  "image_url": null,
+  "marks": 5,
+  "difficulty": "hard",
+  "chapter_title": "Force and Laws of Motion"
+}
 
 Generate pedagogical, error-free, balanced questions with equal marks distribution across all selected chapters.`;
 
