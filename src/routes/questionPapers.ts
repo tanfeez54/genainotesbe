@@ -73,7 +73,7 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
       time_allowed_minutes: z.number().optional().default(120),
       blueprint: z.any().optional(),
       selected_questions: z.array(z.any()).min(1, 'At least 1 question is required in the paper'),
-      status: z.enum(['draft', 'finalized', 'printed']).default('draft'),
+      status: z.enum(['draft', 'final', 'finalized', 'printed', 'archived']).default('draft'),
     });
 
     const parsed = schema.safeParse(req.body);
@@ -89,6 +89,14 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
       time_allowed_minutes: parsed.data.time_allowed_minutes || 120,
     };
 
+    // Normalize status to match standard DB constraint ('draft', 'final', 'archived')
+    const finalStatus =
+      parsed.data.status === 'finalized' || parsed.data.status === 'final'
+        ? 'final'
+        : parsed.data.status === 'archived'
+        ? 'archived'
+        : 'draft';
+
     const insertPayload: any = {
       school_id: req.school_id,
       created_by: req.userId || undefined,
@@ -99,7 +107,7 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
       duration_minutes: parsed.data.time_allowed_minutes || 120,
       instructions: parsed.data.blueprint?.instructions || null,
       blueprint: blueprintData,
-      status: parsed.data.status || 'draft'
+      status: finalStatus
     };
 
     const { data, error } = await supabaseService
