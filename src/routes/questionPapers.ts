@@ -82,21 +82,29 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
       return;
     }
 
+    const blueprintData = {
+      ...(parsed.data.blueprint || {}),
+      exam_type: parsed.data.exam_type || 'Exam',
+      selected_questions: parsed.data.selected_questions,
+      time_allowed_minutes: parsed.data.time_allowed_minutes || 120,
+    };
+
+    const insertPayload: any = {
+      school_id: req.school_id,
+      created_by: req.userId || undefined,
+      title: parsed.data.title,
+      class_id: parsed.data.class_id || null,
+      subject_id: parsed.data.subject_id || null,
+      total_marks: parsed.data.total_marks,
+      duration_minutes: parsed.data.time_allowed_minutes || 120,
+      instructions: parsed.data.blueprint?.instructions || null,
+      blueprint: blueprintData,
+      status: parsed.data.status || 'draft'
+    };
+
     const { data, error } = await supabaseService
       .from('question_papers')
-      .insert({
-        school_id: req.school_id,
-        created_by: req.userId || undefined,
-        title: parsed.data.title,
-        class_id: parsed.data.class_id || null,
-        subject_id: parsed.data.subject_id || null,
-        exam_type: parsed.data.exam_type,
-        total_marks: parsed.data.total_marks,
-        time_allowed_minutes: parsed.data.time_allowed_minutes,
-        blueprint: parsed.data.blueprint || {},
-        selected_questions: parsed.data.selected_questions,
-        status: parsed.data.status
-      })
+      .insert(insertPayload)
       .select('*, classes(id, name), subjects(id, name)')
       .single();
 
@@ -118,6 +126,13 @@ router.patch('/:id', requireSchoolAccess(['super_admin', 'school_admin', 'teache
     const updatePayload = { ...req.body };
     delete updatePayload.id;
     delete updatePayload.school_id;
+
+    if (updatePayload.time_allowed_minutes !== undefined) {
+      updatePayload.duration_minutes = updatePayload.time_allowed_minutes;
+      delete updatePayload.time_allowed_minutes;
+    }
+    delete updatePayload.exam_type;
+    delete updatePayload.selected_questions;
 
     const { data, error } = await supabaseService
       .from('question_papers')
