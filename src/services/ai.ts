@@ -128,3 +128,136 @@ export async function generateNotesWithAI(
 
   return validated.data;
 }
+
+export interface QuestionSectionConfig {
+  section_name: string;
+  type: 'mcq' | 'short_answer' | 'long_answer' | 'true_false' | 'fill_blank' | 'match_the_following';
+  count: number;
+  marks_per_question: number;
+  difficulty?: 'easy' | 'medium' | 'hard';
+}
+
+export interface QuestionGenerationConfig {
+  className: string;
+  subjectName: string;
+  chapterTitles?: string[];
+  contextContent?: string;
+  sections: QuestionSectionConfig[];
+  language?: string;
+  customInstructions?: string;
+}
+
+export interface GeneratedQuestionItem {
+  id?: string;
+  section_name: string;
+  type: string;
+  question_text: string;
+  options?: { label: string; text: string }[] | null;
+  correct_option?: string | null;
+  answer_text?: string | null;
+  marks: number;
+  difficulty: 'easy' | 'medium' | 'hard';
+  chapter_title?: string;
+}
+
+export async function generateQuestionsWithAI(
+  config: QuestionGenerationConfig
+): Promise<GeneratedQuestionItem[]> {
+  const chaptersStr = config.chapterTitles && config.chapterTitles.length > 0
+    ? config.chapterTitles.join(', ')
+    : 'All Chapters / General Syllabus';
+
+  const sectionsDesc = config.sections
+    .map(
+      (s, idx) =>
+        `Section ${idx + 1}: "${s.section_name}" -> Exactly ${s.count} questions of type "${s.type}" (${s.marks_per_question} mark(s) each, difficulty: ${s.difficulty || 'medium'})`
+    )
+    .join('\n');
+
+  const contextPrompt = config.contextContent
+    ? `\n\nReference Material / OCR Textbook Extracts:\n${config.contextContent.slice(0, 10000)}`
+    : '';
+
+  const customPrompt = config.customInstructions
+    ? `\nSpecial Instructions: ${config.customInstructions}`
+    : '';
+
+  const prompt = `You are a master academic question paper creator for CBSE / ICSE / State Board schools.
+Create a high-quality, comprehensive examination question paper strictly following the curriculum standards.
+
+CLASS / GRADE: ${config.className}
+SUBJECT: ${config.subjectName}
+CHAPTERS / SYLLABUS: ${chaptersStr}
+LANGUAGE: ${config.language || 'English'}
+${customPrompt}${contextPrompt}
+
+BLUEPRINT SPECIFICATIONS:
+${sectionsDesc}
+
+STRICT JSON OUTPUT REQUIREMENTS:
+1. Return ONLY a valid JSON array of question objects (no markdown wrapping, no extra prose).
+2. Each object MUST match this schema:
+[
+  {
+    "section_name": "Section A - Multiple Choice Questions",
+    "type": "mcq",
+    "question_text": "Complete question text clearly stated",
+    "options": [
+      { "label": "A", "text": "Option text" },
+      { "label": "B", "text": "Option text" },
+      { "label": "C", "text": "Option text" },
+      { "label": "D", "text": "Option text" }
+    ],
+    "correct_option": "A",
+    "answer_text": "Explanation and correct answer",
+    "marks": 1,
+    "difficulty": "easy",
+    "chapter_title": "Chapter name"
+  },
+  {
+    "section_name": "Section B - Short Answer Questions",
+    "type": "short_answer",
+    "question_text": "Short answer question text",
+    "options": null,
+    "correct_option": null,
+    "answer_text": "Detailed model answer / points expected for grading",
+    "marks": 3,
+    "difficulty": "medium",
+    "chapter_title": "Chapter name"
+  }
+]
+
+Generate pedagogical, error-free, and syllabus-appropriate questions.`;
+
+  const result = await model.generateContent(prompt);
+  const rawText = result.response.text().trim();
+
+  const jsonText = rawText
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  try {
+    const parsed = JSON.parse(jsonText);
+    if (Array.isArray(parsed)) {
+      return parsed.map((item, idx) => ({
+        id: `gen-${Date.now()}-${idx + 1}`,
+        section_name: item.section_name || 'General',
+        type: item.type || 'short_answer',
+        question_text: item.question_text || '',
+        options: item.options || null,
+        correct_option: item.correct_option || null,
+        answer_text: item.answer_text || null,
+        marks: Number(item.marks) || 1,
+        difficulty: item.difficulty || 'medium',
+        chapter_title: item.chapter_title || '',
+      }));
+    }
+    throw new Error('AI output was not an array');
+  } catch (err: any) {
+    console.error('Error parsing AI questions response:', err, rawText);
+    throw new Error('Failed to parse AI generated questions. Please try again.');
+  }
+}
+

@@ -15,6 +15,7 @@ import classesRouter from './routes/classes';
 import chaptersRouter from './routes/chapters';
 import scansRouter from './routes/scans';
 import questionsRouter from './routes/questions';
+import questionPapersRouter from './routes/questionPapers';
 import uploadRouter from './routes/upload';
 
 const app = express();
@@ -100,6 +101,7 @@ app.use('/api/classes', authMiddleware, classesRouter);
 app.use('/api/chapters', authMiddleware, chaptersRouter);
 app.use('/api/scans', authMiddleware, scansRouter);
 app.use('/api/questions', authMiddleware, questionsRouter);
+app.use('/api/question-papers', authMiddleware, questionPapersRouter);
 app.use('/api/upload', authMiddleware, uploadRouter);
 
 // 404 handler
