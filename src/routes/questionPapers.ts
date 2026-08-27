@@ -169,6 +169,9 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
       subject_name: z.string().optional(),
       chapter_ids: z.array(z.string().uuid()).optional(),
       chapter_names: z.array(z.string()).optional(),
+      scan_ids: z.array(z.string().uuid()).optional(),
+      raw_ocr_text: z.string().optional(),
+      strict_ocr_only: z.boolean().optional().default(true),
       sections: z.array(
         z.object({
           section_name: z.string(),
@@ -212,8 +215,39 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
       if (sub?.name) resolvedSubjectName = sub.name;
     }
 
-    // Fetch chapter titles if chapter_ids provided
     let contextOcrContent = '';
+
+    // 1. Fetch OCR text from selected scanned documents
+    if (parsed.data.scan_ids && parsed.data.scan_ids.length > 0) {
+      const { data: scans } = await supabaseService
+        .from('scanned_documents')
+        .select('id, raw_ocr_text, doc_type, chapters(id, title, subjects(id, name, classes(id, name)))')
+        .in('id', parsed.data.scan_ids);
+
+      if (scans && scans.length > 0) {
+        const scanTexts = scans
+          .map((s, idx) => `[SCANNED DOCUMENT ${idx + 1} (${s.doc_type || 'document'})]:\n${s.raw_ocr_text || ''}`)
+          .filter(Boolean)
+          .join('\n\n');
+
+        contextOcrContent += scanTexts;
+
+        // Auto resolve class/subject/chapter from scan if missing
+        if (scans[0]?.chapters) {
+          const ch: any = scans[0].chapters;
+          if (!resolvedChapterTitles.includes(ch.title)) resolvedChapterTitles.push(ch.title);
+          if (ch.subjects?.name && resolvedSubjectName === 'General Subject') resolvedSubjectName = ch.subjects.name;
+          if (ch.subjects?.classes?.name && resolvedClassName === 'General Grade') resolvedClassName = ch.subjects.classes.name;
+        }
+      }
+    }
+
+    // 2. Add raw OCR text if explicitly provided
+    if (parsed.data.raw_ocr_text) {
+      contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + parsed.data.raw_ocr_text;
+    }
+
+    // 3. Fetch chapter titles and chapter content if chapter_ids provided
     if (parsed.data.chapter_ids && parsed.data.chapter_ids.length > 0) {
       const { data: chaps } = await supabaseService
         .from('chapters')
@@ -221,12 +255,17 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
         .in('id', parsed.data.chapter_ids);
 
       if (chaps && chaps.length > 0) {
-        resolvedChapterTitles = chaps.map(c => c.title);
-        // Gather available chapter content/OCR text as context
-        contextOcrContent = chaps
+        const newTitles = chaps.map(c => c.title);
+        resolvedChapterTitles = Array.from(new Set([...resolvedChapterTitles, ...newTitles]));
+        
+        const chapTexts = chaps
           .map(c => c.content_text ? `Chapter "${c.title}":\n${c.content_text}` : '')
           .filter(Boolean)
           .join('\n\n');
+
+        if (chapTexts) {
+          contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + chapTexts;
+        }
       }
     }
 

@@ -142,6 +142,7 @@ export interface QuestionGenerationConfig {
   subjectName: string;
   chapterTitles?: string[];
   contextContent?: string;
+  strictOcrOnly?: boolean;
   sections: QuestionSectionConfig[];
   language?: string;
   customInstructions?: string;
@@ -175,21 +176,25 @@ export async function generateQuestionsWithAI(
     .join('\n');
 
   const contextPrompt = config.contextContent
-    ? `\n\nReference Material / OCR Textbook Extracts:\n${config.contextContent.slice(0, 10000)}`
+    ? `\n\n=== SOURCE SCANNED DOCUMENT OCR TEXT (STRICT GROUND TRUTH) ===\n${config.contextContent.slice(0, 15000)}\n=== END OF SCANNED DOCUMENT TEXT ===`
+    : '';
+
+  const strictGroundingRule = config.contextContent
+    ? `\nCRITICAL MANDATE: You MUST generate/extract questions SOLELY from the provided SCANNED DOCUMENT OCR TEXT above. Do NOT invent questions from your own general training data. All questions, facts, equations, and solutions must be directly sourced or formulated from the scanned content provided.`
     : '';
 
   const customPrompt = config.customInstructions
     ? `\nSpecial Instructions: ${config.customInstructions}`
     : '';
 
-  const prompt = `You are a master academic question paper creator for CBSE / ICSE / State Board schools.
-Create a high-quality, comprehensive examination question paper strictly following the curriculum standards.
+  const prompt = `You are a strict academic question paper extractor & generator.
+Create a high-quality, comprehensive examination question paper.
 
 CLASS / GRADE: ${config.className}
 SUBJECT: ${config.subjectName}
 CHAPTERS / SYLLABUS: ${chaptersStr}
 LANGUAGE: ${config.language || 'English'}
-${customPrompt}${contextPrompt}
+${strictGroundingRule}${customPrompt}${contextPrompt}
 
 BLUEPRINT SPECIFICATIONS:
 ${sectionsDesc}
@@ -201,7 +206,7 @@ STRICT JSON OUTPUT REQUIREMENTS:
   {
     "section_name": "Section A - Multiple Choice Questions",
     "type": "mcq",
-    "question_text": "Complete question text clearly stated",
+    "question_text": "Complete question text clearly stated from the scanned document",
     "options": [
       { "label": "A", "text": "Option text" },
       { "label": "B", "text": "Option text" },
@@ -209,7 +214,7 @@ STRICT JSON OUTPUT REQUIREMENTS:
       { "label": "D", "text": "Option text" }
     ],
     "correct_option": "A",
-    "answer_text": "Explanation and correct answer",
+    "answer_text": "Explanation and correct answer from document",
     "marks": 1,
     "difficulty": "easy",
     "chapter_title": "Chapter name"
@@ -217,7 +222,7 @@ STRICT JSON OUTPUT REQUIREMENTS:
   {
     "section_name": "Section B - Short Answer Questions",
     "type": "short_answer",
-    "question_text": "Short answer question text",
+    "question_text": "Short answer question text from the scanned document",
     "options": null,
     "correct_option": null,
     "answer_text": "Detailed model answer / points expected for grading",
@@ -227,7 +232,7 @@ STRICT JSON OUTPUT REQUIREMENTS:
   }
 ]
 
-Generate pedagogical, error-free, and syllabus-appropriate questions.`;
+Generate pedagogical, error-free, and syllabus-appropriate questions strictly grounded in the scanned document.`;
 
   const result = await model.generateContent(prompt);
   const rawText = result.response.text().trim();
