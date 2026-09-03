@@ -212,7 +212,7 @@ ${sectionsDesc}
 
 STRICT JSON OUTPUT REQUIREMENTS:
 1. Return ONLY a valid JSON array of question objects (no markdown wrapping, no extra prose).
-2. MATH FORMATTING: You MUST format all mathematical expressions, fractions, roots, equations, degrees, percentages, and scientific notation using standard LaTeX enclosed in `$` signs (e.g. `$\\frac{3}{4}$`, `$\\sqrt{5}$`, `$90^\\circ$`, `$x^2$`). Do NOT use plain text like '3/4' or 'sqrt(5)'.
+2. MATH FORMATTING: You MUST format all mathematical expressions, fractions, roots, equations, degrees, percentages, and scientific notation using standard LaTeX enclosed in $ signs (e.g. $\\frac{3}{4}$, $\\sqrt{5}$, $90^\\circ$, $x^2$). Do NOT use plain text like '3/4' or 'sqrt(5)'.
 3. Each object MUST match this schema according to its type:
 
 For MCQ ('mcq'):
