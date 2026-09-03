@@ -189,7 +189,8 @@ export async function generateQuestionsWithAI(
     : '';
 
   const strictGroundingRule = config.contextContent
-    ? `\nCRITICAL MANDATE: You MUST generate/extract questions SOLELY from the provided SCANNED DOCUMENT OCR TEXT above. Do NOT invent questions from your own general training data. All questions, facts, equations, and solutions must be directly sourced or formulated from the scanned content provided.`
+    ? `\nCRITICAL MANDATE: You MUST generate/extract questions SOLELY from the provided SCANNED DOCUMENT OCR TEXT above. Do NOT invent questions from your own general training data. All questions, facts, equations, and solutions must be directly sourced or formulated from the scanned content provided.
+If the source text already contains explicitly formatted questions, you MUST extract and use them VERBATIM (word-for-word exactly as they appear in the source text, including all exact LaTeX formulas, numbers, options, and formatting). Do NOT rephrase, modify, or rewrite existing questions from the source.`
     : '';
 
   const customPrompt = config.customInstructions
@@ -211,7 +212,8 @@ ${sectionsDesc}
 
 STRICT JSON OUTPUT REQUIREMENTS:
 1. Return ONLY a valid JSON array of question objects (no markdown wrapping, no extra prose).
-2. Each object MUST match this schema according to its type:
+2. MATH FORMATTING: You MUST format all mathematical expressions, fractions, roots, equations, degrees, percentages, and scientific notation using standard LaTeX enclosed in `$` signs (e.g. `$\\frac{3}{4}$`, `$\\sqrt{5}$`, `$90^\\circ$`, `$x^2$`). Do NOT use plain text like '3/4' or 'sqrt(5)'.
+3. Each object MUST match this schema according to its type:
 
 For MCQ ('mcq'):
 {
