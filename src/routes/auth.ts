@@ -264,6 +264,80 @@ router.post('/set-password', async (req: Request, res: Response) => {
 });
 
 // ==========================================
+// 3.5 FORGOT PASSWORD -> Generates OTP and sends it
+// ==========================================
+router.post('/forgot-password', async (req: Request, res: Response) => {
+  const { email } = req.body;
+  if (!email) {
+    res.status(400).json({ error: 'Email is required' });
+    return;
+  }
+
+  try {
+    const { data: user, error: dbError } = await supabaseAdmin
+      .from('users')
+      .select('id')
+      .eq('email', email.toLowerCase().trim())
+      .single();
+
+    if (dbError || !user) {
+      res.status(200).json({ success: true, message: 'If an account exists, a reset code has been sent.' });
+      return;
+    }
+
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+
+    const { error: updateError } = await supabaseAdmin
+      .from('users')
+      .update({ otp, otp_expires_at: expiresAt })
+      .eq('id', user.id);
+
+    if (updateError) throw updateError;
+
+    const apiKey = process.env.GOODSENDER_API_KEY;
+    const senderEmail = process.env.GOODSENDER_SENDER_EMAIL;
+
+    if (apiKey && senderEmail) {
+      const goodsenderUrl = 'https://api.goodsender.com/v1/emails/template';
+      const emailPayload = {
+        from: { email: senderEmail, name: 'NoteGen AI' },
+        to: { email: email.toLowerCase().trim() },
+        subject: 'Your Password Reset Code',
+        template: {
+          template_id: 'otp_code',
+          variables: {
+            purpose: 'Password reset',
+            app_name: 'NoteGen AI',
+            otp_code: otp,
+            expiry_minutes: '10',
+            anti_phishing_notice: 'If you did not request a password reset, please ignore this email.'
+          }
+        }
+      };
+
+      await fetch(goodsenderUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(emailPayload)
+      }).catch(err => console.warn('[GoodSender] Request failed:', err));
+    }
+
+    console.log(`\n========================================`);
+    console.log(`🔐 LOCAL DEV: Your Reset OTP for ${email} is: ${otp}`);
+    console.log(`========================================\n`);
+
+    res.status(200).json({ success: true, message: 'If an account exists, a reset code has been sent.' });
+  } catch (error) {
+    console.error('[Auth Forgot Password Error]', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
+// ==========================================
 // 4. LOGIN -> Verifies Email + Password
 // ==========================================
 router.post('/login', async (req: Request, res: Response) => {
