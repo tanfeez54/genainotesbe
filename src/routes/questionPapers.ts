@@ -386,4 +386,46 @@ router.post('/from-bank', requireSchoolAccess(), async (req: Request, res: Respo
   }
 });
 
+// POST /api/question-papers/:id/generate-pdf — Generate PDF and Health Report
+router.post('/:id/generate-pdf', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { id } = req.params;
+
+    const { data: paper, error: paperError } = await supabaseService
+      .from('question_papers')
+      .select('*, classes(id, name), subjects(id, name)')
+      .eq('id', id)
+      .eq('school_id', req.school_id)
+      .single();
+
+    if (paperError || !paper) {
+      res.status(404).json({ error: 'Question paper not found' });
+      return;
+    }
+
+    const { data: school } = await supabaseService
+      .from('schools')
+      .select('id, name, logo_url, stamp_url, signature_url, board, address, contact_email, phone')
+      .eq('id', req.school_id)
+      .single();
+
+    const fullData = { ...paper, school: school || null };
+
+    // Dynamically import to avoid Playwright overhead if not used
+    const { generatePdfFromData } = await import('../services/pdfService');
+    const { pdfBuffer, healthReport } = await generatePdfFromData(fullData);
+
+    // In a real system, you might save healthReport to Supabase here
+    // For now, we return it in a custom header so the frontend can read it if it wants,
+    // or you could build a multi-part response/dedicated endpoint.
+    res.setHeader('X-Health-Report', JSON.stringify(healthReport));
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="paper_${id}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (err: any) {
+    console.error('PDF Generation Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate PDF' });
+  }
+});
+
 export default router;
