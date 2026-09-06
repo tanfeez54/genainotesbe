@@ -79,7 +79,7 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
 
       const totalSecMarks = matched.reduce((acc: number, q: any) => acc + (Number(q.marks) || 1), 0);
       sectionGroups.push({
-        sectionName: \`\${secTitle} (\${totalSecMarks} MARKS)\`,
+        sectionName: `${secTitle} (${totalSecMarks} MARKS)`,
         type: t,
         instruction: secInstruction,
         questions: matched,
@@ -91,7 +91,7 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
   if (remaining.length > 0) {
     const totalSecMarks = remaining.reduce((acc: number, q: any) => acc + (Number(q.marks) || 1), 0);
     sectionGroups.push({
-      sectionName: \`ADDITIONAL QUESTIONS (\${totalSecMarks} MARKS)\`,
+      sectionName: `ADDITIONAL QUESTIONS (${totalSecMarks} MARKS)`,
       type: 'other',
       instruction: 'Answer the following questions:',
       questions: remaining,
@@ -109,54 +109,54 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
         const optItems = q.options.map((opt: any, oIdx: number) => {
           const label = String.fromCharCode(65 + oIdx);
           const text = typeof opt === 'string' ? opt : opt.text || '';
-          return \`<div class="mcq-col"><strong>(\${label})</strong> \${processText(text, q.id)}</div>\`;
+          return `<div class="mcq-col"><strong>(${label})</strong> ${processText(text, q.id)}</div>`;
         }).join('');
-        detailsHtml = \`<div class="options">\${optItems}</div>\`;
+        detailsHtml = `<div class="options">${optItems}</div>`;
       } else if (sec.type === 'true_false') {
-        detailsHtml = \`
+        detailsHtml = `
           <div class="tf-row">
             <span><span class="box"></span> (A) True</span>
             <span><span class="box"></span> (B) False</span>
           </div>
-        \`;
+        `;
       }
 
-      const marksHtml = q.marks ? \`<span class="q-marks">[\${q.marks}]</span>\` : '';
+      const marksHtml = q.marks ? `<span class="q-marks">[${q.marks}]</span>` : '';
       
-      return \`
+      return `
         <div class="question">
           <div class="q-head">
-            <span class="q-num">\${qNum}.</span>
-            <span class="q-text">\${qText}</span>
-            \${marksHtml}
+            <span class="q-num">${qNum}.</span>
+            <span class="q-text">${qText}</span>
+            ${marksHtml}
           </div>
-          \${detailsHtml}
+          ${detailsHtml}
         </div>
-      \`;
+      `;
     }).join('');
 
-    return \`
+    return `
       <div class="section-container">
-        <div class="sec-title">\${sec.sectionName}</div>
-        <div class="sec-inst">\${sec.instruction}</div>
-        <div class="sec-questions">\${qHtml}</div>
+        <div class="sec-title">${sec.sectionName}</div>
+        <div class="sec-inst">${sec.instruction}</div>
+        <div class="sec-questions">${qHtml}</div>
       </div>
-    \`;
+    `;
   }).join('');
 
   // Build the full HTML document
-  const fullHtml = \`
+  const fullHtml = `
     <!DOCTYPE html>
     <html lang="en">
       <head>
         <meta charset="UTF-8" />
         <link href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css" rel="stylesheet">
         <style>
-          @page { size: A4; margin: 20mm 15mm; }
+          @page { size: A4; margin: 15mm 15mm; }
           body { 
             font-family: "Noto Serif", "Times New Roman", serif; 
-            font-size: 12pt; 
-            line-height: 1.5; 
+            font-size: 10.5pt; 
+            line-height: 1.4; 
             margin: 0;
             padding: 0;
             color: #000;
@@ -164,56 +164,61 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
           .paper-header {
             text-align: center;
             border-bottom: 2px solid #000;
-            padding-bottom: 10px;
-            margin-bottom: 20px;
+            padding-bottom: 8px;
+            margin-bottom: 15px;
           }
-          .school-name { font-size: 18pt; font-weight: bold; text-transform: uppercase; }
-          .exam-title { font-size: 14pt; font-weight: bold; margin-top: 5px; }
-          .meta-table { width: 100%; border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; margin-top: 10px; font-size: 11pt; font-weight: bold; }
+          .school-name { font-size: 16pt; font-weight: bold; text-transform: uppercase; }
+          .exam-title { font-size: 13pt; font-weight: bold; margin-top: 4px; }
+          .meta-table { width: 100%; border-top: 1.5px solid #000; border-bottom: 1.5px solid #000; margin-top: 8px; font-size: 10pt; font-weight: bold; }
           .meta-table td { padding: 4px; text-align: center; }
-          .instructions { margin-bottom: 20px; font-size: 11pt; border: 1px solid #000; padding: 10px; }
-          .section-container { margin-bottom: 20px; }
-          .sec-title { font-size: 12pt; font-weight: bold; text-align: center; text-transform: uppercase; margin-bottom: 5px; }
-          .sec-inst { font-size: 11pt; font-style: italic; margin-bottom: 10px; font-weight: bold; }
+          .instructions { margin-bottom: 15px; font-size: 10pt; border: 1px solid #000; padding: 8px; }
+          .section-container { margin-bottom: 15px; }
+          .sec-title { font-size: 11.5pt; font-weight: bold; text-align: center; text-transform: uppercase; margin-bottom: 5px; }
+          .sec-inst { font-size: 10.5pt; font-style: italic; margin-bottom: 8px; font-weight: bold; }
           
           /* Specific requirements from prompt */
-          .question { break-inside: avoid; margin-bottom: 12px; }
+          .sec-questions {
+            column-count: 2;
+            column-gap: 20px;
+            column-fill: balance;
+          }
+          .question { break-inside: avoid; page-break-inside: avoid; margin-bottom: 12px; }
           .katex-display, .katex { break-inside: avoid; }
-          .options { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin-top: 8px; padding-left: 24px; }
+          .options { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; padding-left: 20px; }
           
           .q-head { display: flex; align-items: flex-start; }
-          .q-num { font-weight: bold; min-width: 24px; }
+          .q-num { font-weight: bold; min-width: 20px; }
           .q-text { flex-grow: 1; }
-          .q-marks { font-weight: bold; margin-left: 10px; white-space: nowrap; }
-          .tf-row { padding-left: 24px; margin-top: 8px; display: flex; gap: 40px; }
-          .box { display: inline-block; width: 12px; height: 12px; border: 1px solid #000; margin-right: 5px; }
+          .q-marks { font-weight: bold; margin-left: 6px; white-space: nowrap; }
+          .tf-row { padding-left: 20px; margin-top: 6px; display: flex; gap: 20px; }
+          .box { display: inline-block; width: 10px; height: 10px; border: 1px solid #000; margin-right: 4px; }
         </style>
       </head>
       <body>
         <div class="paper-header">
-          <div class="school-name">\${schoolName}</div>
-          \${schoolAddress ? \`<div style="font-size: 10pt;">\${schoolAddress}</div>\` : ''}
-          <div class="exam-title">\${examTitle}</div>
+          <div class="school-name">${schoolName}</div>
+          ${schoolAddress ? `<div style="font-size: 10pt;">${schoolAddress}</div>` : ''}
+          <div class="exam-title">${examTitle}</div>
           <table class="meta-table">
             <tr>
-              <td>CLASS: \${className}</td>
-              <td>SUBJECT: \${subjectName}</td>
-              <td>TIME: \${timeAllowed}</td>
-              <td>MARKS: \${totalMarks}</td>
+              <td>CLASS: ${className}</td>
+              <td>SUBJECT: ${subjectName}</td>
+              <td>TIME: ${timeAllowed}</td>
+              <td>MARKS: ${totalMarks}</td>
             </tr>
           </table>
         </div>
-        \${instructions ? \`<div class="instructions"><strong>Instructions:</strong><br>\${instructions.replace(/\\n/g, '<br>')}</div>\` : ''}
-        \${sectionsHtml}
+        ${instructions ? `<div class="instructions"><strong>Instructions:</strong><br>${instructions.replace(/n/g, '<br>')}</div>` : ''}
+        ${sectionsHtml}
         <div style="text-align: center; font-weight: bold; margin-top: 30px;">*** END OF PAPER ***</div>
       </body>
     </html>
-  \`;
+  `;
 
   // STAGE 3: Verification
   const violations = verifyNoRawLatex(fullHtml);
   if (violations.length > 0) {
-    throw new Error(\`Verification Failed: The generated paper contains visible broken LaTeX. Violations: \${violations.join(', ')}\`);
+    throw new Error(`Verification Failed: The generated paper contains visible broken LaTeX. Violations: ${violations.join(', ')}`);
   }
 
   // Generate PDF via Playwright
