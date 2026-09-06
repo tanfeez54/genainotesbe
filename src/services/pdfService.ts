@@ -79,7 +79,7 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
 
       const totalSecMarks = matched.reduce((acc: number, q: any) => acc + (Number(q.marks) || 1), 0);
       sectionGroups.push({
-        sectionName: \`\${secTitle} (\${totalSecMarks} MARKS)\`,
+        sectionName: `${secTitle} (${totalSecMarks} MARKS)`,
         type: t,
         instruction: secInstruction,
         questions: matched,
@@ -91,7 +91,7 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
   if (remaining.length > 0) {
     const totalSecMarks = remaining.reduce((acc: number, q: any) => acc + (Number(q.marks) || 1), 0);
     sectionGroups.push({
-      sectionName: \`ADDITIONAL QUESTIONS (\${totalSecMarks} MARKS)\`,
+      sectionName: `ADDITIONAL QUESTIONS (${totalSecMarks} MARKS)`,
       type: 'other',
       instruction: 'Answer the following questions:',
       questions: remaining,
@@ -109,43 +109,43 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
         const optItems = q.options.map((opt: any, oIdx: number) => {
           const label = String.fromCharCode(65 + oIdx);
           const text = typeof opt === 'string' ? opt : opt.text || '';
-          return \`<div class="mcq-col"><strong>(\${label})</strong> \${processText(text, q.id)}</div>\`;
+          return `<div class="mcq-col"><strong>(${label})</strong> ${processText(text, q.id)}</div>`;
         }).join('');
-        detailsHtml = \`<div class="options">\${optItems}</div>\`;
+        detailsHtml = `<div class="options">${optItems}</div>`;
       } else if (sec.type === 'true_false') {
-        detailsHtml = \`
+        detailsHtml = `
           <div class="tf-row">
             <span><span class="box"></span> (A) True</span>
             <span><span class="box"></span> (B) False</span>
           </div>
-        \`;
+        `;
       }
 
-      const marksHtml = q.marks ? \`<span class="q-marks">[\${q.marks}]</span>\` : '';
+      const marksHtml = q.marks ? `<span class="q-marks">[${q.marks}]</span>` : '';
       
-      return \`
+      return `
         <div class="question">
           <div class="q-head">
-            <span class="q-num">\${qNum}.</span>
-            <span class="q-text">\${qText}</span>
-            \${marksHtml}
+            <span class="q-num">${qNum}.</span>
+            <span class="q-text">${qText}</span>
+            ${marksHtml}
           </div>
-          \${detailsHtml}
+          ${detailsHtml}
         </div>
-      \`;
+      `;
     }).join('');
 
-    return \`
+    return `
       <div class="section-container">
-        <div class="sec-title">\${sec.sectionName}</div>
-        <div class="sec-inst">\${sec.instruction}</div>
-        <div class="sec-questions">\${qHtml}</div>
+        <div class="sec-title">${sec.sectionName}</div>
+        <div class="sec-inst">${sec.instruction}</div>
+        <div class="sec-questions">${qHtml}</div>
       </div>
-    \`;
+    `;
   }).join('');
 
   // Build the full HTML document
-  const fullHtml = \`
+  const fullHtml = `
     <!DOCTYPE html>
     <html lang="en">
       <head>
@@ -196,29 +196,29 @@ export async function generatePdfFromData(data: any): Promise<{ pdfBuffer: Buffe
       </head>
       <body>
         <div class="paper-header">
-          <div class="school-name">\${schoolName}</div>
-          \${schoolAddress ? \`<div style="font-size: 10pt;">\${schoolAddress}</div>\` : ''}
-          <div class="exam-title">\${examTitle}</div>
+          <div class="school-name">${schoolName}</div>
+          ${schoolAddress ? `<div style="font-size: 10pt;">${schoolAddress}</div>` : ''}
+          <div class="exam-title">${examTitle}</div>
           <table class="meta-table">
             <tr>
-              <td>CLASS: \${className}</td>
-              <td>SUBJECT: \${subjectName}</td>
-              <td>TIME: \${timeAllowed}</td>
-              <td>MARKS: \${totalMarks}</td>
+              <td>CLASS: ${className}</td>
+              <td>SUBJECT: ${subjectName}</td>
+              <td>TIME: ${timeAllowed}</td>
+              <td>MARKS: ${totalMarks}</td>
             </tr>
           </table>
         </div>
-        \${instructions ? \`<div class="instructions"><strong>Instructions:</strong><br>\${instructions.replace(/\\n/g, '<br>')}</div>\` : ''}
-        \${sectionsHtml}
+        ${instructions ? `<div class="instructions"><strong>Instructions:</strong><br>${instructions.replace(/n/g, '<br>')}</div>` : ''}
+        ${sectionsHtml}
         <div style="text-align: center; font-weight: bold; margin-top: 30px;">*** END OF PAPER ***</div>
       </body>
     </html>
-  \`;
+  `;
 
   // STAGE 3: Verification
   const violations = verifyNoRawLatex(fullHtml);
   if (violations.length > 0) {
-    throw new Error(\`Verification Failed: The generated paper contains visible broken LaTeX. Violations: \${violations.join(', ')}\`);
+    throw new Error(`Verification Failed: The generated paper contains visible broken LaTeX. Violations: ${violations.join(', ')}`);
   }
 
   // Generate PDF via Playwright
