@@ -56,17 +56,17 @@ router.post('/signup', async (req: Request, res: Response) => {
 
     const goodsenderUrl = 'https://api.goodsender.com/v1/emails/template';
     const emailPayload = {
-      from: { email: senderEmail, name: 'NoteGen AI' },
+      from: { email: senderEmail, name: 'NoteGen Academic' },
       to: { email },
-      subject: 'Your NoteGen AI Verification Code',
+      subject: `${otp} is your NoteGen Academic verification code`,
       template: {
         template_id: 'otp_code',
         variables: {
-          purpose: 'Signup verification',
-          app_name: 'NoteGen AI',
+          purpose: 'Account Verification',
+          app_name: 'NoteGen Academic',
           otp_code: otp,
           expiry_minutes: '10',
-          anti_phishing_notice: 'If you did not request this code, please ignore this email.'
+          anti_phishing_notice: 'This is an automated one-time security code. NoteGen staff will never ask for your code. If you did not request this, please ignore.'
         }
       }
     };
@@ -301,17 +301,17 @@ router.post('/forgot-password', async (req: Request, res: Response) => {
     if (apiKey && senderEmail) {
       const goodsenderUrl = 'https://api.goodsender.com/v1/emails/template';
       const emailPayload = {
-        from: { email: senderEmail, name: 'NoteGen AI' },
+        from: { email: senderEmail, name: 'NoteGen Academic' },
         to: { email: email.toLowerCase().trim() },
-        subject: 'Your Password Reset Code',
+        subject: `${otp} is your NoteGen Academic password reset code`,
         template: {
           template_id: 'otp_code',
           variables: {
-            purpose: 'Password reset',
-            app_name: 'NoteGen AI',
+            purpose: 'Password Reset',
+            app_name: 'NoteGen Academic',
             otp_code: otp,
             expiry_minutes: '10',
-            anti_phishing_notice: 'If you did not request a password reset, please ignore this email.'
+            anti_phishing_notice: 'This is an automated one-time security code. If you did not request a password reset, please ignore this email.'
           }
         }
       };
