@@ -36,11 +36,28 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
     const { name, contact_email, phone, address, board, logo_url, stamp_url, signature_url, classes_range, num_teachers, num_students } = parsed.data;
 
-    // 1. Create the school
+    // 1. Create the school with ₹50 welcome credit (10 free generations) & 14-day trial
+    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     const { data: school, error: schoolError } = await supabaseService
       .from('schools')
       .insert([
-        { name, contact_email, phone, address, board, logo_url, stamp_url, signature_url, classes_range, num_teachers, num_students }
+        {
+          name,
+          contact_email,
+          phone,
+          address,
+          board,
+          logo_url,
+          stamp_url,
+          signature_url,
+          classes_range,
+          num_teachers,
+          num_students,
+          wallet_balance: 50.0,
+          cost_per_generation: 5.0,
+          subscription_status: 'trial',
+          trial_ends_at: trialEndsAt,
+        },
       ])
       .select()
       .single();
@@ -59,8 +76,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
           school_id: school.id,
           user_id: userId,
           role: 'school_admin',
-          full_name: 'Admin'
-        }
+          full_name: 'Admin',
+        },
       ]);
 
     if (userError) {
@@ -69,7 +86,23 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    res.status(201).json({ message: 'School created successfully', school });
+    // 3. Log the welcome bonus in wallet transactions
+    try {
+      await supabaseService.from('wallet_transactions').insert([
+        {
+          school_id: school.id,
+          user_id: userId,
+          amount: 50.0,
+          type: 'welcome_bonus',
+          description: 'Welcome Bonus: 10 Free AI Generations (₹50.00 credit)',
+          balance_after: 50.0,
+        },
+      ]);
+    } catch (txErr) {
+      console.warn('Could not record welcome transaction:', txErr);
+    }
+
+    res.status(201).json({ message: 'School created successfully with ₹50 welcome credit!', school });
   } catch (error) {
     console.error('Server error creating school:', error);
     res.status(500).json({ error: 'Internal server error' });

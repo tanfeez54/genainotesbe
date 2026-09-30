@@ -3,6 +3,7 @@ import { supabaseService } from '../lib/supabase';
 import { z } from 'zod';
 import { requireSchoolAccess } from '../middleware/schoolAccess';
 import { generateQuestionsWithAI, QuestionSectionConfig } from '../services/ai';
+import { BillingService } from '../services/billingService';
 
 const router = Router();
 
@@ -139,6 +140,28 @@ router.patch('/:id', requireSchoolAccess(['super_admin', 'school_admin', 'teache
       updatePayload.duration_minutes = updatePayload.time_allowed_minutes;
       delete updatePayload.time_allowed_minutes;
     }
+
+    // Preserve selected_questions inside blueprint
+    if (req.body.selected_questions || updatePayload.blueprint) {
+      const blueprintData = updatePayload.blueprint || {};
+      if (req.body.selected_questions) {
+        blueprintData.selected_questions = req.body.selected_questions;
+      }
+      if (updatePayload.duration_minutes) {
+        blueprintData.time_allowed_minutes = updatePayload.duration_minutes;
+      }
+      updatePayload.blueprint = blueprintData;
+    }
+
+    if (updatePayload.status) {
+      updatePayload.status =
+        updatePayload.status === 'finalized' || updatePayload.status === 'final'
+          ? 'final'
+          : updatePayload.status === 'archived'
+          ? 'archived'
+          : 'draft';
+    }
+
     delete updatePayload.exam_type;
     delete updatePayload.selected_questions;
 
@@ -292,6 +315,27 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
       }
     }
 
+    const schoolId = req.school_id;
+    const userId = req.userId;
+
+    if (!schoolId) {
+      res.status(400).json({ error: 'School context missing from request' });
+      return;
+    }
+
+    // 1. Check subscription validity and wallet balance (minimum ₹5 required)
+    const allowance = await BillingService.checkGenerationAllowance(schoolId);
+    if (!allowance.allowed) {
+      res.status(402).json({
+        error: allowance.reason || 'Insufficient balance or subscription expired',
+        code: 'INSUFFICIENT_FUNDS_OR_EXPIRED',
+        current_balance: allowance.currentBalance,
+        cost_per_generation: allowance.cost,
+        remaining_generations: allowance.generationsRemaining,
+      });
+      return;
+    }
+
     const generatedQuestions = await generateQuestionsWithAI({
       className: resolvedClassName,
       subjectName: resolvedSubjectName,
@@ -302,6 +346,24 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
       customInstructions: parsed.data.custom_instructions,
     });
 
+    // 2. Deduct ₹5 per generation fee atomically after successful generation
+    let billingMeta = null;
+    try {
+      const deduction = await BillingService.deductGenerationFee(
+        schoolId,
+        userId,
+        undefined,
+        `AI Question Paper Generation (${resolvedClassName} - ${resolvedSubjectName})`
+      );
+      billingMeta = {
+        cost_deducted: deduction.costDeducted,
+        new_balance: deduction.newBalance,
+        generations_remaining: Math.floor(deduction.newBalance / 5),
+      };
+    } catch (billingErr: any) {
+      console.warn('[AI Generate] Billing deduction warning:', billingErr);
+    }
+
     res.json({
       message: 'Questions generated successfully with AI',
       data: generatedQuestions,
@@ -311,7 +373,8 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
         chapters: resolvedChapterTitles,
         totalQuestions: generatedQuestions.length,
         totalMarks: generatedQuestions.reduce((acc, q) => acc + (q.marks || 0), 0),
-      }
+      },
+      billing: billingMeta,
     });
   } catch (err: any) {
     console.error('AI Paper Generation Error:', err);
