@@ -17,6 +17,7 @@ import scansRouter from './routes/scans';
 import questionsRouter from './routes/questions';
 import questionPapersRouter from './routes/questionPapers';
 import uploadRouter from './routes/upload';
+import billingRouter from './routes/billing';
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -103,6 +104,7 @@ app.use('/api/scans', authMiddleware, scansRouter);
 app.use('/api/questions', authMiddleware, questionsRouter);
 app.use('/api/question-papers', authMiddleware, questionPapersRouter);
 app.use('/api/upload', authMiddleware, uploadRouter);
+app.use('/api/billing', authMiddleware, billingRouter);
 
 // 404 handler
 app.use((_req, res) => {

@@ -7,8 +7,102 @@ import {
   notesQuerySchema,
 } from '../schemas';
 import { runGenerationPipeline } from '../services/pipeline';
+import { generateLessonSuiteWithAI } from '../services/ai';
 
 const router = Router();
+
+// POST /api/notes/generate-lesson-suite — 7-Core Teacher Lesson & Academic Suite Generator
+router.post('/generate-lesson-suite', async (req: Request, res: Response) => {
+  try {
+    const {
+      class_id,
+      subject_id,
+      chapter_id,
+      className,
+      subjectName,
+      chapterTitle,
+      board,
+      language,
+      customInstructions,
+      scan_ids,
+      raw_ocr_text,
+    } = req.body;
+
+    let resolvedClassName = className || '';
+    let resolvedSubjectName = subjectName || '';
+    let resolvedChapterTitle = chapterTitle || '';
+
+    // If IDs are provided, resolve names from DB if needed
+    if (class_id && !resolvedClassName) {
+      const { data: c } = await supabaseAdmin.from('classes').select('name').eq('id', class_id).maybeSingle();
+      if (c?.name) resolvedClassName = c.name;
+    }
+    if (subject_id && !resolvedSubjectName) {
+      const { data: s } = await supabaseAdmin.from('subjects').select('name').eq('id', subject_id).maybeSingle();
+      if (s?.name) resolvedSubjectName = s.name;
+    }
+    if (chapter_id && !resolvedChapterTitle) {
+      const { data: ch } = await supabaseAdmin.from('chapters').select('title, content_text').eq('id', chapter_id).maybeSingle();
+      if (ch?.title) resolvedChapterTitle = ch.title;
+    }
+
+    if (!resolvedClassName || !resolvedSubjectName || !resolvedChapterTitle) {
+      res.status(400).json({ error: 'Class, Subject, and Chapter title are required' });
+      return;
+    }
+
+    let contextOcrContent = raw_ocr_text || '';
+
+    // 1. Fetch from specific scan_ids if selected (strictly syllabus / textbook scans)
+    if (Array.isArray(scan_ids) && scan_ids.length > 0) {
+      const { data: scans } = await supabaseAdmin
+        .from('scanned_documents')
+        .select('raw_ocr_text, doc_type')
+        .in('id', scan_ids)
+        .in('doc_type', ['chapter_syllabus', 'chapter_page']);
+      if (scans && scans.length > 0) {
+        const texts = scans.map((s, idx) => `[SCANNED SYLLABUS / TEXTBOOK PAGE ${idx + 1}]:\n${s.raw_ocr_text}`).filter(Boolean).join('\n\n');
+        contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + texts;
+      }
+    } else if (chapter_id) {
+      // 2. Automatically load all syllabus OCR scans attached to this chapter (isolated from question paper scans)
+      const { data: scans } = await supabaseAdmin
+        .from('scanned_documents')
+        .select('raw_ocr_text, doc_type')
+        .eq('chapter_id', chapter_id)
+        .in('doc_type', ['chapter_syllabus', 'chapter_page']);
+      if (scans && scans.length > 0) {
+        const texts = scans.map((s, idx) => `[SCANNED SYLLABUS / TEXTBOOK PAGE ${idx + 1}]:\n${s.raw_ocr_text}`).filter(Boolean).join('\n\n');
+        contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + texts;
+      }
+
+      // Also check if chapter has content_text
+      const { data: ch } = await supabaseAdmin.from('chapters').select('content_text').eq('id', chapter_id).maybeSingle();
+      if (ch?.content_text) {
+        contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + `[CHAPTER SYLLABUS & NOTES]:\n${ch.content_text}`;
+      }
+    }
+
+    const suite = await generateLessonSuiteWithAI({
+      className: resolvedClassName,
+      subjectName: resolvedSubjectName,
+      chapterTitle: resolvedChapterTitle,
+      board: board || 'CBSE',
+      language: language || 'English',
+      customInstructions,
+      contextContent: contextOcrContent || undefined,
+    });
+
+    res.json({
+      message: '7-Core Teacher Lesson Suite generated successfully',
+      data: suite,
+      scans_used: Boolean(contextOcrContent),
+    });
+  } catch (err: any) {
+    console.error('Lesson Suite Generation Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate lesson suite' });
+  }
+});
 
 // GET /api/notes — list user's notes with filters
 router.get('/', async (req: Request, res: Response) => {

@@ -352,3 +352,240 @@ Generate pedagogical, error-free, balanced questions with equal marks distributi
   }
 }
 
+export interface LessonSuiteConfig {
+  className: string;
+  subjectName: string;
+  chapterTitle: string;
+  board?: string;
+  language?: string;
+  customInstructions?: string;
+  contextContent?: string;
+}
+
+export async function generateLessonSuiteWithAI(config: LessonSuiteConfig) {
+  const board = config.board || 'CBSE';
+  const language = config.language || 'English';
+
+  const prompt = `You are a master academic curriculum director and senior CBSE/State Board teacher trainer.
+Create a comprehensive, 7-Core Master Teacher Lesson & Academic Suite for:
+Class/Grade: ${config.className}
+Subject: ${config.subjectName}
+Chapter/Topic: ${config.chapterTitle}
+Academic Board: ${board}
+Language: ${language}
+${config.customInstructions ? `Additional Teacher Guidelines: ${config.customInstructions}` : ''}
+${config.contextContent ? `
+CRITICAL INSTRUCTION - GROUND STRICTLY IN THE FOLLOWING VERBATIM SCANNED CHAPTER TEXTBOOK / NOTES CONTENT:
+---
+${config.contextContent}
+---
+Ensure all teaching points, definitions, formulas, real-world examples, diagrams, and homework questions are directly aligned with and faithfully reflect the scanned textbook pages above.` : ''}
+
+You MUST return a strictly valid JSON object matching the exact 7-core structure below. Do NOT wrap in markdown backticks or explanations, return ONLY raw JSON:
+
+{
+  "metadata": {
+    "className": "${config.className}",
+    "subjectName": "${config.subjectName}",
+    "chapterTitle": "${config.chapterTitle}",
+    "board": "${board}",
+    "language": "${language}",
+    "generatedAt": "${new Date().toISOString()}",
+    "chapter_executive_summary": "Thorough, in-depth 2 to 3 paragraph executive summary of the entire chapter, highlighting core principles, real-world significance, and essential takeaways.",
+    "source_grounding_analysis": {
+      "sources_used": ["Scanned Page 1: Key introductory concepts", "Scanned Page 2: Core formulas & laws"],
+      "scanned_concepts_extracted": ["Specific Concept 1 from scanned text", "Specific Formula 2 from scanned text", "Specific Diagram from scanned text"],
+      "grounding_faithfulness_score": "98% Aligned with Physical Textbook Scans"
+    }
+  },
+  "teaching_plan": {
+    "total_periods_recommended": 8,
+    "timeline_summary": "Comprehensive teaching plan structured across classroom periods with explicit learning goals.",
+    "sequence_rationale": "Clear pedagogical explanation of why topics are ordered in this specific sequence (building from concrete basics to abstract applications).",
+    "periods": [
+      {
+        "period_number": 1,
+        "day_title": "Introduction & Fundamental Concepts",
+        "topics_covered": "Detailed list of topics for this period",
+        "duration_minutes": 45,
+        "prerequisites": "Prior knowledge students must have before starting this period",
+        "pedagogy_focus": "Interactive discussion, inquiry-based demo, or textbook reading"
+      }
+    ]
+  },
+  "teaching_guide": {
+    "topics": [
+      {
+        "topic_name": "Specific Topic Name",
+        "source_reference": "Scanned Textbook Page 1 & 2 / NCERT Section",
+        "what_to_teach": "Deep, highly detailed explanation of the core concepts, laws, and definitions that must be taught in this topic",
+        "how_to_explain": "Step-by-step teacher delivery script, blackboard structure, and conceptual flow to ensure effortless student clarity",
+        "intuitive_analogy": "Memorable everyday life analogy to make the concept stick effortlessly",
+        "real_world_examples": ["Practical real-life example 1 with full context", "Practical real-life example 2 with full context"],
+        "common_mistakes_and_fixes": [
+          {
+            "mistake": "Common student misunderstanding or calculation error",
+            "correction": "Exact clarification to tell students in class"
+          }
+        ],
+        "teacher_delivery_tips": "Pro-tip for blackboard layout, student engagement, or board exam trick"
+      }
+    ]
+  },
+  "mandatory_notes": {
+    "heading": "Compulsory Student Notebook Notes — Board Exam Standard",
+    "instructions_for_students": "Must be neatly copied into the classroom notebook before homework assignment.",
+    "definitions": [
+      {
+        "term": "Term Name",
+        "exact_definition": "Precise, board-exam approved verbatim definition",
+        "source_citation": "Scanned Page 1 / Standard Textbook Chapter Section",
+        "importance": "High yield / 2 marks question"
+      }
+    ],
+    "formulas_and_rules": [
+      {
+        "title": "Formula / Law / Principle Name",
+        "formula": "Mathematical or symbolic expression",
+        "derivation_steps": "Key step-by-step derivation or logical reasoning steps",
+        "explanation": "Explanation of every symbol, standard SI units, and where to apply"
+      }
+    ],
+    "theorems_and_postulates": [
+      {
+        "name": "Theorem or Scientific Rule Name",
+        "statement": "Formal statement as expected in examinations",
+        "key_proof_steps": "Critical bullet points required in the proof or derivation"
+      }
+    ],
+    "important_diagrams": [
+      {
+        "title": "Diagram / Schematic Title",
+        "description": "Clear step-by-step guidance on how to draw it cleanly on paper",
+        "must_label_parts": ["Label 1", "Label 2", "Label 3"]
+      }
+    ],
+    "high_yield_exam_points": [
+      "Key phrase or keywords that examiners check when awarding full marks"
+    ]
+  },
+  "classwork_homework": {
+    "classwork_practice": [
+      {
+        "q_no": 1,
+        "question": "Hands-on question for immediate in-class practice right after lecture",
+        "marks": 2,
+        "solution_hints": "Quick teacher guidance or blackboard solution hint"
+      }
+    ],
+    "homework_assignment": [
+      {
+        "level": "Basic",
+        "question": "Direct textbook / definition-based problem for confidence building",
+        "marks": 2,
+        "guided_clue": "Hint to guide students"
+      },
+      {
+        "level": "Standard",
+        "question": "Conceptual application or multi-step numerical problem",
+        "marks": 3,
+        "guided_clue": "Hint on which formula or rule to use"
+      },
+      {
+        "level": "Brain-Teaser (HOTS)",
+        "question": "High Order Thinking Skills / Case study / Tricky board exam question",
+        "marks": 5,
+        "guided_clue": "Deeper insight or multi-concept connection"
+      }
+    ],
+    "estimated_homework_time_mins": 35
+  },
+  "pyq_legacy_analysis": {
+    "board_name": "${board}",
+    "overall_chapter_weightage": "Estimated 6 to 9 marks in annual board examination",
+    "topic_priority_breakdown": [
+      {
+        "topic": "Topic Name",
+        "priority": "High Yield (🔴)",
+        "frequency_tags": ["Asked in 2024", "Asked in 2022", "Asked in 2020 (Compartment)"],
+        "recurring_question_types": "Numerical problem + derivation of the core formula",
+        "marks_trend": "Usually asked as 3-mark or 5-mark long question",
+        "examiner_favorite_traps": "Students forget to convert units to SI or forget negative signs"
+      }
+    ]
+  },
+  "quick_assessment": {
+    "topic_checks": [
+      {
+        "question_number": 1,
+        "topic": "Topic Name",
+        "question": "3-5 quick diagnostic check questions to gauge instant comprehension",
+        "type": "mcq",
+        "options": ["Option A", "Option B", "Option C", "Option D"],
+        "answer": "Option A (Explanation)",
+        "gap_identified_if_wrong": "If student picks B or C, they have confused concept X with concept Y"
+      }
+    ],
+    "remedial_suggestions": [
+      "If more than 30% of the class fails Question 1, re-explain the analogy of X on the blackboard"
+    ]
+  },
+  "revision_test_plan": {
+    "revision_schedule": [
+      {
+        "phase": "Immediate Day+2 Review",
+        "timing": "2 days after chapter completion",
+        "strategy": "Rapid 10-minute formula & definition recall test"
+      },
+      {
+        "phase": "Weekend Deep Consolidation",
+        "timing": "End of week",
+        "strategy": "Solve 5 previous year board questions under timed conditions"
+      },
+      {
+        "phase": "Pre-Exam Final Polish",
+        "timing": "3 days before unit test / terminal exam",
+        "strategy": "Review rapid cheat sheet and solve mock test paper"
+      }
+    ],
+    "top_10_must_solve_questions": [
+      {
+        "q_no": 1,
+        "question": "Most critical board examination question for this chapter",
+        "marks": 5,
+        "why_important": "Frequently asked in board exams and tests 3 related core concepts"
+      }
+    ],
+    "chapter_test_blueprint": {
+      "test_title": "${config.chapterTitle} — Chapter Mastery Test",
+      "total_marks": 25,
+      "time_minutes": 45,
+      "sections_overview": "Section A: 5 MCQs (5M), Section B: 3 Short Qs (6M), Section C: 3 Long Qs (9M), Section D: 1 Case Study (5M)"
+    },
+    "rapid_cheat_sheet_bullets": [
+      "Ultra-condensed formula or memory rule for 5-minute pre-exam revision",
+      "Key distinction between easily confused terms",
+      "Golden rule for board presentation"
+    ]
+  }
+}
+
+Ensure all 7 sections contain rich, highly specific, academically accurate content for "${config.chapterTitle}" (${config.className} ${config.subjectName}). Do NOT leave placeholders.`;
+
+  const result = await model.generateContent(prompt);
+  const rawText = result.response.text().trim();
+
+  const jsonText = rawText
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  try {
+    return JSON.parse(jsonText);
+  } catch (err: any) {
+    console.error('Error parsing AI Lesson Suite JSON:', err, rawText);
+    throw new Error('Failed to parse AI generated Lesson Suite. Please try again.');
+  }
+}
+

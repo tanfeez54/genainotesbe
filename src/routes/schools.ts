@@ -36,11 +36,28 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
 
     const { name, contact_email, phone, address, board, logo_url, stamp_url, signature_url, classes_range, num_teachers, num_students } = parsed.data;
 
-    // 1. Create the school
+    // 1. Create the school with ₹50 welcome credit (10 free generations) & 14-day trial
+    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
     const { data: school, error: schoolError } = await supabaseService
       .from('schools')
       .insert([
-        { name, contact_email, phone, address, board, logo_url, stamp_url, signature_url, classes_range, num_teachers, num_students }
+        {
+          name,
+          contact_email,
+          phone,
+          address,
+          board,
+          logo_url,
+          stamp_url,
+          signature_url,
+          classes_range,
+          num_teachers,
+          num_students,
+          wallet_balance: 50.0,
+          cost_per_generation: 5.0,
+          subscription_status: 'trial',
+          trial_ends_at: trialEndsAt,
+        },
       ])
       .select()
       .single();
@@ -59,8 +76,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
           school_id: school.id,
           user_id: userId,
           role: 'school_admin',
-          full_name: 'Admin'
-        }
+          full_name: 'Admin',
+        },
       ]);
 
     if (userError) {
@@ -69,7 +86,23 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    res.status(201).json({ message: 'School created successfully', school });
+    // 3. Log the welcome bonus in wallet transactions
+    try {
+      await supabaseService.from('wallet_transactions').insert([
+        {
+          school_id: school.id,
+          user_id: userId,
+          amount: 50.0,
+          type: 'welcome_bonus',
+          description: 'Welcome Bonus: 10 Free AI Generations (₹50.00 credit)',
+          balance_after: 50.0,
+        },
+      ]);
+    } catch (txErr) {
+      console.warn('Could not record welcome transaction:', txErr);
+    }
+
+    res.status(201).json({ message: 'School created successfully with ₹50 welcome credit!', school });
   } catch (error) {
     console.error('Server error creating school:', error);
     res.status(500).json({ error: 'Internal server error' });
@@ -223,80 +256,242 @@ router.patch('/:id', async (req: Request, res: Response): Promise<void> => {
   }
 });
 
+// List all staff members for a school
+router.get('/:id/staff', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+
+    const schoolId = req.params.id;
+
+    // Verify user belongs to this school
+    const { data: access } = await supabaseService
+      .from('school_users')
+      .select('role')
+      .eq('school_id', schoolId)
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .single();
+
+    if (!access) {
+      res.status(403).json({ error: 'Access denied to this school' });
+      return;
+    }
+
+    // Fetch all members of this school with their details
+    const { data: members, error: membersError } = await supabaseService
+      .from('school_users')
+      .select('id, user_id, role, full_name, is_active, created_at')
+      .eq('school_id', schoolId)
+      .order('created_at', { ascending: false });
+
+    if (membersError) throw membersError;
+
+    // Fetch emails from users table
+    const userIds = (members || []).map((m: any) => m.user_id).filter(Boolean);
+    let userMap: Record<string, any> = {};
+    if (userIds.length > 0) {
+      const { data: usersData } = await supabaseService
+        .from('users')
+        .select('id, email, full_name, mobile')
+        .in('id', userIds);
+      (usersData || []).forEach((u: any) => {
+        userMap[u.id] = u;
+      });
+    }
+
+    const staffWithDetails = (members || []).map((m: any) => {
+      const u = userMap[m.user_id];
+      return {
+        ...m,
+        email: u?.email || 'N/A',
+        full_name: m.full_name || u?.full_name || 'Staff Member',
+        mobile: u?.mobile || null,
+      };
+    });
+
+    res.json({ staff: staffWithDetails });
+  } catch (error) {
+    console.error('Server error fetching school staff:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // Invite a user to a school
 router.post('/:id/invite', async (req: Request, res: Response): Promise<void> => {
-    try {
-        const userId = req.userId;
-        if (!userId) {
-          res.status(401).json({ error: 'Unauthorized' });
-          return;
-        }
-    
-        const schoolId = req.params.id;
-    
-        // Check if current user is school_admin
-        const { data: access, error: accessError } = await supabaseService
-          .from('school_users')
-          .select('role')
-          .eq('school_id', schoolId)
-          .eq('user_id', userId)
-          .eq('is_active', true)
-          .single();
-    
-        if (accessError || !access || access.role !== 'school_admin') {
-          res.status(403).json({ error: 'Only school admins can invite users' });
-          return;
-        }
-
-        const schema = z.object({
-            email: z.string().email(),
-            role: z.enum(['school_admin', 'teacher', 'data_entry']),
-            full_name: z.string().optional()
-        });
-
-        const parsed = schema.safeParse(req.body);
-        if (!parsed.success) {
-            res.status(400).json({ error: 'Invalid input', details: parsed.error.issues });
-            return;
-        }
-
-        const { email, role, full_name } = parsed.data;
-
-        // Note: In a real implementation, you would:
-        // 1. Send an invite email via Supabase Admin API: await supabaseService.auth.admin.inviteUserByEmail(email)
-        // 2. Add them to school_users table once they sign up (using a trigger, or pre-filling).
-        // Since we don't want to actually send emails right now in this mock environment, 
-        // we'll just return a success message assuming the Resend setup is working.
-
-        const { data: inviteData, error: inviteError } = await supabaseService.auth.admin.inviteUserByEmail(email, {
-            data: { full_name }
-        });
-
-        if (inviteError) {
-             console.error('Invite error:', inviteError);
-             res.status(500).json({ error: 'Failed to send invite' });
-             return;
-        }
-
-        // We can pre-create the school_users mapping with the new user's ID
-        if (inviteData && inviteData.user) {
-             await supabaseService
-             .from('school_users')
-             .insert([
-                 {
-                 school_id: schoolId,
-                 user_id: inviteData.user.id,
-                 role: role,
-                 full_name: full_name
-                 }
-             ]);
-        }
-
-        res.json({ message: 'User invited successfully' });
-    } catch (error) {
-        console.error('Server error inviting user:', error);
-        res.status(500).json({ error: 'Internal server error' });
+  try {
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
     }
+
+    const schoolId = req.params.id;
+
+    // Check if current user is school_admin or super_admin
+    const { data: access, error: accessError } = await supabaseService
+      .from('school_users')
+      .select('role')
+      .eq('school_id', schoolId)
+      .eq('user_id', userId)
+      .eq('is_active', true)
+      .single();
+
+    if (accessError || !access || (access.role !== 'school_admin' && access.role !== 'super_admin')) {
+      res.status(403).json({ error: 'Only school admins can invite staff members' });
+      return;
+    }
+
+    const schema = z.object({
+      email: z.string().email('Invalid email address'),
+      role: z.enum(['school_admin', 'teacher', 'data_entry']),
+      full_name: z.string().optional()
+    });
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Invalid input', details: parsed.error.issues });
+      return;
+    }
+
+    const { email, role, full_name } = parsed.data;
+    const targetEmail = email.toLowerCase().trim();
+
+    // Fetch school info for invitation email
+    const { data: school } = await supabaseService
+      .from('schools')
+      .select('name')
+      .eq('id', schoolId)
+      .single();
+    const schoolName = school?.name || 'NoteGen Academic School';
+
+    // 1. Check if user already exists in custom users table
+    let { data: existingUser } = await supabaseService
+      .from('users')
+      .select('id, email, full_name')
+      .eq('email', targetEmail)
+      .single();
+
+    // If user doesn't exist, create an account record for them
+    if (!existingUser) {
+      const { data: createdUser, error: createError } = await supabaseService
+        .from('users')
+        .insert([
+          {
+            email: targetEmail,
+            full_name: full_name?.trim() || 'Staff Member',
+          }
+        ])
+        .select('id, email, full_name')
+        .single();
+
+      if (createError || !createdUser) {
+        console.error('Error creating user record for invite:', createError);
+        const { data: retryUser } = await supabaseService
+          .from('users')
+          .select('id, email, full_name')
+          .eq('email', targetEmail)
+          .single();
+        existingUser = retryUser;
+      } else {
+        existingUser = createdUser;
+      }
+    }
+
+    if (!existingUser) {
+      res.status(500).json({ error: 'Could not register user record for invitation' });
+      return;
+    }
+
+    // 2. Upsert into school_users table
+    const { data: existingMember } = await supabaseService
+      .from('school_users')
+      .select('id, role, is_active')
+      .eq('school_id', schoolId)
+      .eq('user_id', existingUser.id)
+      .single();
+
+    if (existingMember) {
+      await supabaseService
+        .from('school_users')
+        .update({
+          role,
+          full_name: full_name?.trim() || existingUser.full_name || 'Staff Member',
+          is_active: true
+        })
+        .eq('id', existingMember.id);
+    } else {
+      const { error: insertError } = await supabaseService
+        .from('school_users')
+        .insert([
+          {
+            school_id: schoolId,
+            user_id: existingUser.id,
+            role,
+            full_name: full_name?.trim() || existingUser.full_name || 'Staff Member',
+            is_active: true
+          }
+        ]);
+
+      if (insertError) {
+        console.error('Error assigning staff member to school:', insertError);
+        res.status(500).json({ error: 'Failed to assign staff member to school' });
+        return;
+      }
+    }
+
+    // 3. Send professional invitation email via GoodSender template
+    const apiKey = process.env.GOODSENDER_API_KEY;
+    const senderEmail = process.env.GOODSENDER_SENDER_EMAIL;
+
+    if (apiKey && senderEmail) {
+      const goodsenderUrl = 'https://api.goodsender.com/v1/emails/template';
+      const appDomain = process.env.APP_URL && !process.env.APP_URL.includes('localhost')
+        ? process.env.APP_URL 
+        : 'https://qalam.website';
+      const roleLabel = role === 'school_admin' ? 'School Administrator' : role === 'data_entry' ? 'Data Entry Staff' : 'Teacher';
+
+      const emailPayload = {
+        from: { email: senderEmail, name: 'NoteGen Academic' },
+        to: { email: targetEmail },
+        subject: `Invitation: Join ${schoolName} on NoteGen`,
+        template: {
+          template_id: 'otp_code',
+          variables: {
+            purpose: 'Staff Invitation',
+            app_name: schoolName,
+            otp_code: 'INVITE',
+            expiry_minutes: '1440',
+            anti_phishing_notice: `You have been added to ${schoolName} as ${roleLabel}. Please log in to your account at ${appDomain}/login to access your syllabus, question generator, and papers.`
+          }
+        }
+      };
+
+      fetch(goodsenderUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(emailPayload)
+      }).catch((err) => console.warn('[GoodSender Invite] Email send failed:', err));
+    }
+
+    res.json({
+      message: `Invite sent successfully to ${targetEmail}!`,
+      staff: {
+        email: targetEmail,
+        role,
+        full_name: full_name?.trim() || existingUser.full_name || 'Staff Member'
+      }
+    });
+  } catch (error) {
+    console.error('Server error inviting user:', error);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 export default router;

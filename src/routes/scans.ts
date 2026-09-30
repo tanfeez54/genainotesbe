@@ -8,12 +8,22 @@ import { uploadToStorage, deleteFromStorage } from '../lib/r2';
 const router = Router();
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY || '');
 
-// GET /api/scans — list school's scans
+// GET /api/scans — list school's scans with strict doc_type isolation (syllabus vs question paper)
 router.get('/', requireSchoolAccess(), async (req: Request, res: Response): Promise<void> => {
   let query = supabaseService
     .from('scanned_documents')
     .select('*, chapters(id, title, subjects(id, name, classes(id, name)))')
     .eq('school_id', req.school_id);
+
+  // Strict separation of syllabus/textbook scans from question paper scans
+  if (req.query.doc_type) {
+    const requestedType = String(req.query.doc_type);
+    if (requestedType === 'chapter_syllabus' || requestedType === 'chapter_page') {
+      query = query.in('doc_type', ['chapter_syllabus', 'chapter_page']);
+    } else {
+      query = query.eq('doc_type', requestedType);
+    }
+  }
 
   if (req.query.chapter_id) {
     query = query.eq('chapter_id', String(req.query.chapter_id)).order('created_at', { ascending: true });
@@ -35,7 +45,7 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
   try {
     const schema = z.object({
       image_url: z.string().min(1, 'Image URL or base64 data is required'),
-      doc_type: z.enum(['question_paper', 'chapter_page']).default('question_paper'),
+      doc_type: z.enum(['question_paper', 'chapter_syllabus', 'chapter_page']).default('question_paper'),
       chapter_id: z.string().uuid().optional(),
       chapter_name: z.string().min(1).optional(),
       subject_id: z.string().uuid().optional(),
@@ -45,6 +55,17 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
     const parsed = schema.safeParse(req.body);
     if (!parsed.success) {
       res.status(400).json({ error: 'Validation failed: Class, Subject and Chapter are required', details: parsed.error.flatten() });
+      return;
+    }
+
+    // Class, Subject, and Chapter are strictly mandatory for all scans
+    if (!parsed.data.class_id && !parsed.data.chapter_id) {
+      res.status(400).json({ error: 'Class is strictly mandatory for all scans. Please select a Class.' });
+      return;
+    }
+
+    if (!parsed.data.subject_id && !parsed.data.chapter_id) {
+      res.status(400).json({ error: 'Subject is strictly mandatory for all scans. Please select a Subject.' });
       return;
     }
 
@@ -84,7 +105,20 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
     }
 
     if (!finalChapterId) {
-      res.status(400).json({ error: 'Chapter is strictly required. Please select or provide a chapter name.' });
+      res.status(400).json({ error: 'Chapter is strictly mandatory for all scans. Please select or provide a Chapter.' });
+      return;
+    }
+
+    // Verify chapter exists and belongs to school
+    const { data: chapterRecord, error: chapterCheckError } = await supabaseService
+      .from('chapters')
+      .select('id, title, subject_id, subjects(id, name, class_id, classes(id, name))')
+      .eq('id', finalChapterId)
+      .eq('school_id', req.school_id)
+      .maybeSingle();
+
+    if (chapterCheckError || !chapterRecord) {
+      res.status(400).json({ error: 'Invalid chapter selected or chapter does not exist.' });
       return;
     }
 
@@ -110,11 +144,16 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
       }
     }
 
+    // Map to valid PostgreSQL check constraint: ('question_paper', 'chapter_page')
+    const dbDocType = (parsed.data.doc_type === 'chapter_syllabus' || parsed.data.doc_type === 'chapter_page') 
+      ? 'chapter_page' 
+      : 'question_paper';
+
     const { data, error } = await supabaseService
       .from('scanned_documents')
       .insert({
         image_url: finalFileUrl,
-        doc_type: parsed.data.doc_type,
+        doc_type: dbDocType,
         chapter_id: finalChapterId,
         school_id: req.school_id,
         uploaded_by: req.userId,
@@ -189,11 +228,21 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
     const geminiModelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
     const model = genAI.getGenerativeModel({ model: geminiModelName });
 
-    const prompt = `You are an expert OCR transcription engine.
-Transcribe and extract the ENTIRE text from the provided image accurately, verbatim, and completely.
-- Preserve all original headings, paragraphs, bullet points, numbered lists, equations, formulas, tables, and Hindi / English text exactly as they appear on the page.
-- Do NOT skip, summarize, or alter any text.
-- Return the extracted raw text directly.`;
+    const prompt = `You are an expert OCR transcription and textbook analysis engine.
+Transcribe and analyze the provided educational document / textbook page image.
+
+You must output in this exact structure with delimiters:
+
+=== VERBATIM_TEXT ===
+Extract the entire text accurately, verbatim, and completely.
+- Preserve all original headings, definitions, equations, chemical/math formulas, and diagrams labels.
+- Do NOT summarize or skip any words in this section.
+
+=== PAGE_SUMMARY ===
+Provide a clear, detailed 2 to 3 sentence educational summary of what this page teaches and its main concepts.
+
+=== KEY_TOPICS ===
+List 3 to 6 key concepts, laws, or topics found on this page (one per line starting with -).`;
 
     const result = await model.generateContent([
       prompt,
@@ -205,14 +254,43 @@ Transcribe and extract the ENTIRE text from the provided image accurately, verba
       }
     ]);
 
-    const extractedText = result.response.text().trim();
+    const rawResult = result.response.text().trim();
+    let extractedText = rawResult;
+    let pageSummary = '';
+    let keyTopics: string[] = [];
 
-    // 5. Save verbatim extracted text to scanned_documents
+    if (rawResult.includes('=== VERBATIM_TEXT ===')) {
+      const verbatimPart = rawResult.split('=== VERBATIM_TEXT ===')[1] || '';
+      const summarySplit = verbatimPart.split('=== PAGE_SUMMARY ===');
+      extractedText = summarySplit[0]?.trim() || rawResult;
+
+      if (summarySplit[1]) {
+        const topicsSplit = summarySplit[1].split('=== KEY_TOPICS ===');
+        pageSummary = topicsSplit[0]?.trim() || '';
+        if (topicsSplit[1]) {
+          keyTopics = topicsSplit[1]
+            .split('\n')
+            .map(line => line.replace(/^[-*•\d.]+\s*/, '').trim())
+            .filter(Boolean);
+        }
+      }
+    }
+
+    if (!pageSummary && extractedText) {
+      pageSummary = extractedText.slice(0, 180) + '...';
+    }
+
+    // 5. Save verbatim extracted text & structured page summary to scanned_documents
     const { data: updatedScan, error: updateError } = await supabaseService
       .from('scanned_documents')
       .update({
         status: 'ocr_completed',
         raw_ocr_text: extractedText,
+        raw_ocr_json: {
+          summary: pageSummary,
+          key_topics: keyTopics,
+          word_count: extractedText.split(/\s+/).filter(Boolean).length,
+        },
         processed_at: new Date().toISOString()
       })
       .eq('id', id)
