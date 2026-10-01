@@ -587,19 +587,33 @@ export class BillingService {
     const newBalance = currentBalance + includedBonusValue;
 
     // Lifetime membership never expires (subscription_ends_at is null)
-    await supabaseService
+    const schoolUpdatePayload: any = {
+      plan_id: plan.id,
+      subscription_status: 'active',
+      subscription_starts_at: now.toISOString(),
+      subscription_ends_at: null,
+      monthly_generation_quota: includedGens,
+      cost_per_generation: Number(plan.cost_per_extra_generation ?? 5.0),
+      wallet_balance: newBalance,
+    };
+
+    // Try updating with 'lifetime'; if database check constraint restricts to ('monthly','yearly'), fallback to 'yearly'
+    const { error: cycleErr } = await supabaseService
       .from('schools')
-      .update({
-        plan_id: plan.id,
-        subscription_status: 'active',
-        subscription_starts_at: now.toISOString(),
-        subscription_ends_at: null,
-        billing_cycle: 'lifetime',
-        monthly_generation_quota: includedGens,
-        cost_per_generation: Number(plan.cost_per_extra_generation ?? 5.0),
-        wallet_balance: newBalance,
-      })
+      .update({ ...schoolUpdatePayload, billing_cycle: 'lifetime' })
       .eq('id', schoolId);
+
+    if (cycleErr) {
+      console.warn('[BillingService] Retrying school lifetime activation with yearly cycle fallback:', cycleErr.message);
+      const { error: fallbackErr } = await supabaseService
+        .from('schools')
+        .update({ ...schoolUpdatePayload, billing_cycle: 'yearly' })
+        .eq('id', schoolId);
+      if (fallbackErr) {
+        console.error('[BillingService] Failed to activate subscription on school:', fallbackErr);
+        throw new Error(fallbackErr.message || 'Failed to update school subscription status');
+      }
+    }
 
     // Record wallet credit for included quota safely
     try {
