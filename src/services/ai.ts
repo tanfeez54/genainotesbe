@@ -337,7 +337,7 @@ Generate pedagogical, error-free, balanced questions with equal marks distributi
       if (typeof val === 'string') {
         return val
           .replace(/\t\s*ext\{/g, '\\text{')
-          .replace(/(?<!\\)ext\{([^\}]+)\}/g, '\\text{$1}')
+          .replace(/(^|[\s\=\+\-\(\[\$])ext\{([^\}]+)\}/g, '$1\\text{$2}')
           .replace(/\\\\([a-zA-Z]+)/g, '\\$1');
       }
       return val;
