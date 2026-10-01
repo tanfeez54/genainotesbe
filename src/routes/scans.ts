@@ -40,6 +40,61 @@ router.get('/', requireSchoolAccess(), async (req: Request, res: Response): Prom
   res.json({ data });
 });
 
+// Helper function for accurate document MIME type detection
+function detectMimeType(buffer: Buffer, urlOrData?: string, headerMime?: string | null): string {
+  // 1. Magic byte identification
+  if (buffer.length >= 4) {
+    // PDF: %PDF
+    if (buffer[0] === 0x25 && buffer[1] === 0x50 && buffer[2] === 0x44 && buffer[3] === 0x46) {
+      return 'application/pdf';
+    }
+    // PNG: \x89PNG
+    if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) {
+      return 'image/png';
+    }
+    // JPEG: \xFF\xD8\xFF
+    if (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) {
+      return 'image/jpeg';
+    }
+    // WEBP: RIFF....WEBP
+    if (buffer.length >= 12 && buffer.toString('ascii', 0, 4) === 'RIFF' && buffer.toString('ascii', 8, 12) === 'WEBP') {
+      return 'image/webp';
+    }
+  }
+
+  // 2. Data URL prefix check
+  if (urlOrData && urlOrData.startsWith('data:')) {
+    const match = urlOrData.match(/^data:(.*?);/);
+    if (match && match[1]) {
+      const mime = match[1].toLowerCase().trim();
+      if (mime.includes('pdf')) return 'application/pdf';
+      if (mime.includes('png')) return 'image/png';
+      if (mime.includes('webp')) return 'image/webp';
+      if (mime.includes('jpeg') || mime.includes('jpg')) return 'image/jpeg';
+    }
+  }
+
+  // 3. File extension check from URL
+  if (urlOrData) {
+    const cleanUrl = urlOrData.split('?')[0].toLowerCase();
+    if (cleanUrl.endsWith('.pdf')) return 'application/pdf';
+    if (cleanUrl.endsWith('.png')) return 'image/png';
+    if (cleanUrl.endsWith('.webp')) return 'image/webp';
+    if (cleanUrl.endsWith('.jpg') || cleanUrl.endsWith('.jpeg')) return 'image/jpeg';
+  }
+
+  // 4. HTTP response header check
+  if (headerMime) {
+    const cleanHeader = headerMime.split(';')[0].trim().toLowerCase();
+    if (cleanHeader.includes('pdf')) return 'application/pdf';
+    if (cleanHeader.includes('png')) return 'image/png';
+    if (cleanHeader.includes('webp')) return 'image/webp';
+    if (cleanHeader.includes('jpeg') || cleanHeader.includes('jpg')) return 'image/jpeg';
+  }
+
+  return 'image/jpeg';
+}
+
 // POST /api/scans — Create a new scan record with STRICT Class/Subject/Chapter validation
 router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
   try {
@@ -128,11 +183,10 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
     if (parsed.data.image_url.startsWith('data:')) {
       try {
         const parts = parsed.data.image_url.split(',');
-        const mimeMatch = parts[0].match(/:(.*?);/);
-        const mimeType = mimeMatch ? mimeMatch[1] : 'image/jpeg';
-        const isPdf = mimeType.includes('pdf');
-        const ext = isPdf ? 'pdf' : mimeType.includes('png') ? 'png' : 'jpg';
         const fileBuffer = Buffer.from(parts[1], 'base64');
+        const mimeType = detectMimeType(fileBuffer, parts[0]);
+        const isPdf = mimeType.includes('pdf');
+        const ext = isPdf ? 'pdf' : mimeType.includes('png') ? 'png' : mimeType.includes('webp') ? 'webp' : 'jpg';
         const filePath = `scans/${req.school_id}/${Date.now()}-${Math.random().toString(36).substring(2, 8)}.${ext}`;
 
         const uploadedUrl = await uploadToStorage(fileBuffer, filePath, mimeType);
@@ -173,8 +227,8 @@ router.post('/', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 
   }
 });
 
-// POST /api/scans/:id/process — Trigger OCR via Gemini
-router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
+// POST /api/scans/:id/process & /api/scans/:id/ocr-process — Trigger OCR via Gemini
+router.post(['/:id/process', '/:id/ocr-process'], requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
   try {
     const { id } = req.params;
 
@@ -209,33 +263,43 @@ router.post('/:id/process', requireSchoolAccess(['super_admin', 'school_admin', 
 
     // 3. Obtain image buffer (supports base64 data URL or HTTP URL)
     let buffer: Buffer;
-    let mimeType = 'image/jpeg';
+    let rawMimeType = 'image/jpeg';
 
     if (scan.image_url.startsWith('data:')) {
       const parts = scan.image_url.split(',');
       const mimeMatch = parts[0].match(/:(.*?);/);
-      if (mimeMatch) mimeType = mimeMatch[1];
+      if (mimeMatch) rawMimeType = mimeMatch[1];
       buffer = Buffer.from(parts[1], 'base64');
     } else {
       const imageResponse = await fetch(scan.image_url);
-      if (!imageResponse.ok) throw new Error('Failed to download image from URL');
+      if (!imageResponse.ok) throw new Error(`Failed to download document from URL (status ${imageResponse.status})`);
       const arrayBuffer = await imageResponse.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
-      mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
+      rawMimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
     }
 
-    // 4. Send to Gemini for Complete Verbatim OCR Text Extraction
-    const geminiModelName = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
-    const model = genAI.getGenerativeModel({ model: geminiModelName });
+    // Accurately detect MIME type (handles PDF, PNG, WEBP, JPEG)
+    const mimeType = detectMimeType(buffer, scan.image_url, rawMimeType);
+
+    // 4. Send to Gemini for Complete Verbatim OCR Text Extraction with Multi-Model Fallback
+    const candidateModels = [
+      process.env.GEMINI_MODEL,
+      'gemini-3.5-flash',
+      'gemini-flash-latest',
+      'gemini-3.5-flash-lite',
+      'gemini-3.8-flash',
+    ].filter(Boolean) as string[];
+    const uniqueModels = Array.from(new Set(candidateModels));
 
     const prompt = `You are an expert OCR transcription and textbook analysis engine.
-Transcribe and analyze the provided educational document / textbook page image.
+Transcribe and analyze the provided educational document / textbook page image / question paper.
 
 You must output in this exact structure with delimiters:
 
 === VERBATIM_TEXT ===
 Extract the entire text accurately, verbatim, and completely.
 - Preserve all original headings, definitions, equations, chemical/math formulas, and diagrams labels.
+- If this is an exam or question paper, capture every question number, sub-question, marks, options, and instructions word for word.
 - Do NOT summarize or skip any words in this section.
 
 === PAGE_SUMMARY ===
@@ -244,17 +308,36 @@ Provide a clear, detailed 2 to 3 sentence educational summary of what this page 
 === KEY_TOPICS ===
 List 3 to 6 key concepts, laws, or topics found on this page (one per line starting with -).`;
 
-    const result = await model.generateContent([
-      prompt,
-      {
-        inlineData: {
-          data: buffer.toString('base64'),
-          mimeType: mimeType.split(';')[0].trim() || 'image/jpeg'
-        }
-      }
-    ]);
+    let rawResult = '';
+    let lastError: any = null;
 
-    const rawResult = result.response.text().trim();
+    for (const modelName of uniqueModels) {
+      try {
+        const model = genAI.getGenerativeModel({ model: modelName });
+        const result = await model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              data: buffer.toString('base64'),
+              mimeType: mimeType,
+            },
+          },
+        ]);
+        rawResult = result.response.text().trim();
+        if (rawResult) {
+          console.log(`[OCR Success] Processed scan ${id} with model: ${modelName} (${mimeType})`);
+          lastError = null;
+          break;
+        }
+      } catch (err: any) {
+        console.warn(`[OCR Warning] Model ${modelName} failed for scan ${id}:`, err?.message || err);
+        lastError = err;
+      }
+    }
+
+    if (!rawResult) {
+      throw new Error(`AI OCR extraction failed across all models. Details: ${lastError?.message || 'No response generated'}`);
+    }
     let extractedText = rawResult;
     let pageSummary = '';
     let keyTopics: string[] = [];

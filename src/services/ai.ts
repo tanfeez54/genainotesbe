@@ -5,8 +5,31 @@ import type { NoteGenerationSettings } from '../types';
 if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
-const model = genAI.getGenerativeModel({ model: GEMINI_MODEL });
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+
+export async function generateContentWithFallback(promptOrParts: any) {
+  const models = [
+    process.env.GEMINI_MODEL,
+    'gemini-3.5-flash',
+    'gemini-flash-latest',
+    'gemini-3.5-flash-lite',
+    'gemini-3.8-flash',
+  ].filter(Boolean) as string[];
+  const uniqueModels = Array.from(new Set(models));
+
+  let lastError: any = null;
+  for (const modelName of uniqueModels) {
+    try {
+      const m = genAI.getGenerativeModel({ model: modelName });
+      const result = await m.generateContent(promptOrParts);
+      return result;
+    } catch (err: any) {
+      console.warn(`[AI Service Warning] Model ${modelName} failed:`, err?.message || err);
+      lastError = err;
+    }
+  }
+  throw lastError || new Error('All AI models failed to generate content');
+}
 
 function buildPrompt(
   content: string,
@@ -90,7 +113,7 @@ export async function generateNotesWithAI(
 ): Promise<AINote> {
   const prompt = buildPrompt(content, settings);
 
-  const result = await model.generateContent(prompt);
+  const result = await generateContentWithFallback(prompt);
   const text = result.response.text().trim();
 
   // Clean potential markdown code blocks
@@ -106,7 +129,7 @@ export async function generateNotesWithAI(
   } catch {
     // Retry with repair prompt
     const repairPrompt = buildPrompt(content, settings, true, text);
-    const repairResult = await model.generateContent(repairPrompt);
+    const repairResult = await generateContentWithFallback(repairPrompt);
     const repairText = repairResult.response.text().trim()
       .replace(/^```json\s*/i, '')
       .replace(/^```\s*/i, '')
@@ -323,7 +346,7 @@ For Long Answer ('long_answer'):
 
 Generate pedagogical, error-free, balanced questions with equal marks distribution across all selected chapters.`;
 
-  const result = await model.generateContent(prompt);
+  const result = await generateContentWithFallback(prompt);
   const rawText = result.response.text().trim();
 
   const jsonText = rawText
@@ -594,7 +617,7 @@ You MUST return a strictly valid JSON object matching the exact 7-core structure
 
 Ensure all 7 sections contain rich, highly specific, academically accurate content for "${config.chapterTitle}" (${config.className} ${config.subjectName}). Do NOT leave placeholders.`;
 
-  const result = await model.generateContent(prompt);
+  const result = await generateContentWithFallback(prompt);
   const rawText = result.response.text().trim();
 
   const jsonText = rawText
