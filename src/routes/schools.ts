@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { supabaseService } from '../lib/supabase';
+import { DeviceSecurityService } from '../services/deviceSecurityService';
 import type { Request, Response } from 'express';
 
 const router = Router();
@@ -26,6 +27,8 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       classes_range: z.string().nullish(),
       num_teachers: z.number().int().nullish(),
       num_students: z.number().int().nullish(),
+      device_fingerprint: z.string().nullish(),
+      device_id: z.string().nullish(),
     });
 
     const parsed = schema.safeParse(req.body);
@@ -34,10 +37,37 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    const { name, contact_email, phone, address, board, logo_url, stamp_url, signature_url, classes_range, num_teachers, num_students } = parsed.data;
+    const {
+      name,
+      contact_email,
+      phone,
+      address,
+      board,
+      logo_url,
+      stamp_url,
+      signature_url,
+      classes_range,
+      num_teachers,
+      num_students,
+    } = parsed.data;
 
-    // 1. Create the school with ₹50 welcome credit (10 free generations) & 14-day trial
-    const trialEndsAt = new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString();
+    // Check if this device, IP, or system has already claimed a free trial
+    const deviceInfo = DeviceSecurityService.extractDeviceInfo(req);
+    const trialCheck = await DeviceSecurityService.checkTrialAllowed({
+      fingerprint: deviceInfo.fingerprint,
+      deviceId: deviceInfo.deviceId,
+      ip: deviceInfo.ip,
+      email: contact_email,
+    });
+
+    const isTrialAllowed = trialCheck.allowed;
+    const initialBalance = isTrialAllowed ? 50.0 : 0.0;
+    const subscriptionStatus = isTrialAllowed ? 'trial' : 'trial_expired';
+    const trialEndsAt = isTrialAllowed
+      ? new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString()
+      : new Date().toISOString();
+
+    // 1. Create the school
     const { data: school, error: schoolError } = await supabaseService
       .from('schools')
       .insert([
@@ -53,9 +83,9 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
           classes_range,
           num_teachers,
           num_students,
-          wallet_balance: 50.0,
+          wallet_balance: initialBalance,
           cost_per_generation: 5.0,
-          subscription_status: 'trial',
+          subscription_status: subscriptionStatus,
           trial_ends_at: trialEndsAt,
         },
       ])
@@ -86,23 +116,46 @@ router.post('/', async (req: Request, res: Response): Promise<void> => {
       return;
     }
 
-    // 3. Log the welcome bonus in wallet transactions
-    try {
-      await supabaseService.from('wallet_transactions').insert([
-        {
-          school_id: school.id,
-          user_id: userId,
-          amount: 50.0,
-          type: 'welcome_bonus',
-          description: 'Welcome Bonus: 10 Free AI Generations (₹50.00 credit)',
-          balance_after: 50.0,
-        },
-      ]);
-    } catch (txErr) {
-      console.warn('Could not record welcome transaction:', txErr);
-    }
+    // 3. Log the welcome bonus and record device claim only if trial is allowed
+    if (isTrialAllowed) {
+      try {
+        await supabaseService.from('wallet_transactions').insert([
+          {
+            school_id: school.id,
+            user_id: userId,
+            amount: 50.0,
+            type: 'welcome_bonus',
+            description: 'Welcome Bonus: 10 Free AI Generations (₹50.00 credit)',
+            balance_after: 50.0,
+          },
+        ]);
 
-    res.status(201).json({ message: 'School created successfully with ₹50 welcome credit!', school });
+        // Record trial claim against this device fingerprint & IP
+        await DeviceSecurityService.recordTrialClaim({
+          fingerprint: deviceInfo.fingerprint,
+          deviceId: deviceInfo.deviceId,
+          ip: deviceInfo.ip,
+          userId,
+          schoolId: school.id,
+        });
+      } catch (txErr) {
+        console.warn('Could not record welcome transaction or claim:', txErr);
+      }
+
+      res.status(201).json({
+        message: 'School created successfully with ₹50 welcome credit!',
+        school,
+        trial_granted: true,
+      });
+    } else {
+      res.status(201).json({
+        message:
+          'School created successfully. Notice: Free trial has already been claimed on this system/device. Current wallet balance is ₹0.00. Please recharge in Subscription & Wallet to generate question papers.',
+        school,
+        trial_granted: false,
+        trial_abuse_prevented: true,
+      });
+    }
   } catch (error) {
     console.error('Server error creating school:', error);
     res.status(500).json({ error: 'Internal server error' });

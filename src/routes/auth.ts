@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
 import { supabaseAdmin } from '../lib/supabase';
+import { DeviceSecurityService } from '../services/deviceSecurityService';
 
 const router = Router();
 
@@ -15,6 +16,14 @@ router.post('/signup', async (req: Request, res: Response) => {
   const { email, full_name, mobile } = req.body;
   if (!email || !full_name) {
     res.status(400).json({ error: 'Email and full_name are required' });
+    return;
+  }
+
+  // Block disposable/burner emails to prevent infinite account farming
+  if (DeviceSecurityService.isDisposableEmail(email)) {
+    res.status(400).json({
+      error: 'Temporary / disposable emails are not permitted. Please use your school email address.',
+    });
     return;
   }
 
