@@ -212,7 +212,11 @@ ${sectionsDesc}
 
 STRICT JSON OUTPUT REQUIREMENTS:
 1. Return ONLY a valid JSON array of question objects (no markdown wrapping, no extra prose).
-2. MATH FORMATTING: You MUST format all mathematical expressions, fractions, roots, equations, degrees, percentages, and scientific notation using standard LaTeX. Do NOT use plain text like '3/4' or 'sqrt(5)'.
+2. STRICT MATH & LATEX FORMATTING RULES:
+   - You MUST format all mathematical expressions, proofs, geometry relations, angles, degrees, fractions, roots, equations, and scientific notations using standard LaTeX.
+   - ALWAYS enclose ALL LaTeX math expressions inside single dollar signs '$ ... $' (e.g. '$ABCD$', '$\\angle B = 90^\\circ$', '$\\Delta BCD$', '$\\angle 1 = \\angle 2$').
+   - NEVER leave raw LaTeX commands like '\\angle', '\\Delta', or '\\text{}' outside '$...$' delimiters.
+   - In JSON output, ALWAYS escape backslashes with double backslashes (e.g. write "\\\\text{...}", "\\\\angle", "\\\\Delta", "\\\\circ") so that JSON parsers do not interpret "\\t" as a tab character.
 3. Each object MUST match this schema according to its type:
 
 For MCQ ('mcq'):
@@ -329,16 +333,34 @@ Generate pedagogical, error-free, balanced questions with equal marks distributi
     .trim();
 
   try {
+    const sanitizeLatex = (val: any): any => {
+      if (typeof val === 'string') {
+        return val
+          .replace(/\t\s*ext\{/g, '\\text{')
+          .replace(/(?<!\\)ext\{([^\}]+)\}/g, '\\text{$1}')
+          .replace(/\\\\([a-zA-Z]+)/g, '\\$1');
+      }
+      return val;
+    };
+
     const parsed = JSON.parse(jsonText);
     if (Array.isArray(parsed)) {
       return parsed.map((item, idx) => ({
         id: `gen-${Date.now()}-${idx + 1}`,
         section_name: item.section_name || 'General',
         type: item.type || 'short_answer',
-        question_text: item.question_text || '',
-        options: item.options || null,
+        question_text: sanitizeLatex(item.question_text || ''),
+        options: item.options
+          ? Array.isArray(item.options)
+            ? item.options.map((opt: any) =>
+                typeof opt === 'string'
+                  ? sanitizeLatex(opt)
+                  : { ...opt, text: sanitizeLatex(opt.text || '') }
+              )
+            : item.options
+          : null,
         correct_option: item.correct_option || null,
-        answer_text: item.answer_text || null,
+        answer_text: sanitizeLatex(item.answer_text || null),
         image_url: item.image_url || null,
         marks: Number(item.marks) || 1,
         difficulty: item.difficulty || 'medium',
