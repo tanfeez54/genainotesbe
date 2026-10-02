@@ -13,11 +13,11 @@ const createChapterSchema = z.object({
 });
 const updateChapterSchema = createChapterSchema.partial();
 
-// GET /api/chapters — list school's chapters
+// GET /api/chapters — list school's chapters with Cloudflare documents
 router.get('/', requireSchoolAccess(), async (req: Request, res: Response): Promise<void> => {
   let query = supabaseService
     .from('chapters')
-    .select('*, subjects(name)')
+    .select('*, subjects(id, name, class_id, classes(id, name)), scanned_documents(id, image_url, doc_type, status, created_at)')
     .eq('school_id', req.school_id)
     .order('order_index', { ascending: true });
 
@@ -31,7 +31,25 @@ router.get('/', requireSchoolAccess(), async (req: Request, res: Response): Prom
     res.status(500).json({ error: error.message });
     return;
   }
-  res.json({ data });
+
+  const enrichedData = (data || []).map((chap: any) => {
+    const scans = chap.scanned_documents || [];
+    const pdfScan = scans.find(
+      (s: any) =>
+        s.image_url &&
+        (s.image_url.toLowerCase().includes('.pdf') || s.image_url.includes('application/pdf'))
+    );
+
+    return {
+      ...chap,
+      has_pdf: !!pdfScan,
+      pdf_url: pdfScan?.image_url || null,
+      documents_count: scans.length,
+      pdf_scans: scans.filter((s: any) => s.image_url?.toLowerCase().includes('.pdf')),
+    };
+  });
+
+  res.json({ data: enrichedData });
 });
 
 // POST /api/chapters — create chapter

@@ -1,6 +1,7 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import { aiNoteSchema, type AINote } from '../schemas';
 import type { NoteGenerationSettings } from '../types';
+import { cropPdfDiagrams, CropTarget, CropPdfDocument } from './pdfCropService';
 
 if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required');
 
@@ -154,7 +155,9 @@ export async function generateNotesWithAI(
 
 export interface QuestionSectionConfig {
   section_name: string;
-  type: 'mcq' | 'short_answer' | 'long_answer' | 'true_false' | 'fill_blank' | 'match_the_following';
+  sub_section?: string;
+  instructions?: string;
+  type: 'mcq' | 'short_answer' | 'long_answer' | 'true_false' | 'fill_blank' | 'match_the_following' | 'picture_based';
   count: number;
   marks_per_question: number;
   difficulty?: 'easy' | 'medium' | 'hard';
@@ -174,9 +177,10 @@ export interface QuestionGenerationConfig {
 export interface GeneratedQuestionItem {
   id?: string;
   section_name: string;
+  sub_section?: string;
   type: string;
   question_text: string;
-  options?: { label: string; text: string }[] | null;
+  options?: any;
   correct_option?: string | null;
   answer_text?: string | null;
   image_url?: string | null;
@@ -184,6 +188,87 @@ export interface GeneratedQuestionItem {
   difficulty: 'easy' | 'medium' | 'hard';
   chapter_title?: string;
 }
+
+export function cleanHindiAndMathText(val: any): any {
+  if (typeof val !== 'string') return val;
+  let s = val;
+
+  // 1. Remove broken HTML tags like \</i> or </i>
+  s = s.replace(/\\?<\/?i>/gi, '');
+
+  // 2. Fix \text{...} or $\text{...}$ that contains Devanagari characters (\u0900-\u097F)
+  s = s.replace(/\$?\\\s*text\{([^}]*[\u0900-\u097F][^}]*)\}\$?(\s*)/g, '$1$2');
+
+  // 3. Fix corrupted backslashes inside Devanagari words
+  s = s.replace(/([\u0900-\u097F])\s*\\\s*([\u0900-\u097F])/g, '$1$2');
+
+  // 4. Strip $...$ around purely Devanagari words without mathematical operators/numbers
+  s = s.replace(/\$([^$]*[\u0900-\u097F][^$]*)\$/g, (match, inner) => {
+    if (!/[0-9\+\-\=\^\/\\_<>\\times\\div\\pm\\leq\\geq]/.test(inner)) {
+      return inner;
+    }
+    return match;
+  });
+
+  // 5. Repair corrupted 'संख्या' fragments (e.g. 'सं \text{ख्\् याओं}', 'सं ख् याओं')
+  s = s.replace(/सं\s*[\\]?\s*ख्[\\\/]?[्\s]*या(ओं|ओ|ऑ|एँ|एं)?/g, (_m, end) => {
+    if (end === 'ओं' || end === 'ओ' || end === 'ऑ') return 'संख्याओं';
+    if (end === 'एँ' || end === 'एं') return 'संख्याएँ';
+    return 'संख्या';
+  });
+  s = s.replace(/(^|[^\u0900-\u097F])ख्[\\\/]?[्\s]*या(ओं|ओ|ऑ|एँ|एं)?/g, (_m, prefix, end) => {
+    if (end === 'ओं' || end === 'ओ' || end === 'ऑ') return prefix + 'ख्याओं';
+    if (end === 'एँ' || end === 'एं') return prefix + 'ख्याएँ';
+    return prefix + 'ख्या';
+  });
+
+  // 6. Normalize duplicate anusvara/chandrabindu
+  s = s.replace(/[\u0902\u0901]{2,}/g, '\u0902');
+
+  // 7. General LaTeX sanitization for English math
+  s = s
+    .replace(/\t\s*ext\{/g, '\\text{')
+    .replace(/\\\\([a-zA-Z]+)/g, '\\$1');
+
+  // 8. Clean textbook/page/chapter references so questions read like authentic exam questions
+  // e.g. 'अध्याय 3 (हमारे चारों ओर पैटर्न) के पृष्ठ 1 के चित्र को देखकर' -> 'दिए गए चित्र को देखकर'
+  s = s.replace(/(?:अध्याय|पाठ)\s*\d*(?:\s*\([^)]*\))?\s*(?:के|पर)?\s*(?:पृष्ठ|पेज)\s*\d*\s*(?:पर|के)?\s*(?:दिए\s*गए\s*)?चित्र\s*को\s*देखकर/g, 'दिए गए चित्र को देखकर');
+  s = s.replace(/चित्र\s*\d+(?:\.\d+)?\s*को\s*देखकर/g, 'दिए गए चित्र को देखकर');
+  s = s.replace(/(?:अध्याय|पाठ)\s*\d*(?:\s*\([^)]*\))?\s*(?:के|पर)?\s*(?:पृष्ठ|पेज)\s*\d*\s*(?:पर|के|में)?/g, '');
+  s = s.replace(/(?:in\s+)?(?:chapter|lesson|unit)\s*\d*(?:\s*\([^)]*\))?,?\s*(?:page|pg\.?)\s*\d*,?\s*look\s+at\s+the\s+(?:picture|figure|diagram)/gi, 'Look at the given picture below');
+  s = s.replace(/(?:figure|fig\.?)\s*\d+(?:\.\d+)?/gi, 'the given figure');
+
+  return s.trim();
+}
+
+export function sanitizeQuestionOptions(options: any): any {
+  if (!options) return null;
+  if (Array.isArray(options)) {
+    return options.map((opt: any) =>
+      typeof opt === 'string'
+        ? cleanHindiAndMathText(opt)
+        : { ...opt, text: cleanHindiAndMathText(opt.text || '') }
+    );
+  }
+  if (typeof options === 'object') {
+    const cleaned: any = {};
+    if (Array.isArray(options.column_a)) {
+      cleaned.column_a = options.column_a.map((item: any) => ({
+        ...item,
+        text: cleanHindiAndMathText(item.text || ''),
+      }));
+    }
+    if (Array.isArray(options.column_b)) {
+      cleaned.column_b = options.column_b.map((item: any) => ({
+        ...item,
+        text: cleanHindiAndMathText(item.text || ''),
+      }));
+    }
+    return cleaned;
+  }
+  return options;
+}
+
 
 export async function generateQuestionsWithAI(
   config: QuestionGenerationConfig
@@ -203,7 +288,7 @@ export async function generateQuestionsWithAI(
   const sectionsDesc = config.sections
     .map(
       (s, idx) =>
-        `Section ${idx + 1}: "${s.section_name}" -> Exactly ${s.count} questions of type "${s.type}" (${s.marks_per_question} mark(s) each, difficulty: ${s.difficulty || 'medium'})`
+        `Section ${idx + 1}: "${s.section_name}"${s.sub_section ? ` (Subsection / Part: "${s.sub_section}")` : ''}${s.instructions ? ` (Instructions: "${s.instructions}")` : ''} -> Exactly ${s.count} questions of type "${s.type}" (${s.marks_per_question} mark(s) each, difficulty: ${s.difficulty || 'medium'})`
     )
     .join('\n');
 
@@ -236,10 +321,10 @@ ${sectionsDesc}
 STRICT JSON OUTPUT REQUIREMENTS:
 1. Return ONLY a valid JSON array of question objects (no markdown wrapping, no extra prose).
 2. STRICT MATH & LATEX FORMATTING RULES:
-   - You MUST format all mathematical expressions, proofs, geometry relations, angles, degrees, fractions, roots, equations, and scientific notations using standard LaTeX.
-   - ALWAYS enclose ALL LaTeX math expressions inside single dollar signs '$ ... $' (e.g. '$ABCD$', '$\\angle B = 90^\\circ$', '$\\Delta BCD$', '$\\angle 1 = \\angle 2$').
-   - NEVER leave raw LaTeX commands like '\\angle', '\\Delta', or '\\text{}' outside '$...$' delimiters.
-   - In JSON output, ALWAYS escape backslashes with double backslashes (e.g. write "\\\\text{...}", "\\\\angle", "\\\\Delta", "\\\\circ") so that JSON parsers do not interpret "\\t" as a tab character.
+   - For all mathematical expressions, proofs, geometry relations, angles, degrees, fractions, roots, equations, and scientific notations, use standard LaTeX enclosed in single dollar signs '$ ... $' (e.g. '$ABCD$', '$\\angle B = 90^\\circ$', '$\\Delta BCD$', '$x^2 + y^2 = r^2$').
+   - HINDI / DEVANAGARI & REGIONAL LANGUAGE RULE: All non-English text (Hindi words, instructions, questions, options) MUST be pure natural Unicode text. NEVER wrap Hindi words inside '\\text{...}' or '$ ... $'. ONLY actual mathematical formulas, variables, and numbers should use '$ ... $'. Hindi words like 'संख्याओं', 'संख्याएँ', 'पैटर्न', 'आकृतियाँ' must be written as normal Hindi text without any LaTeX markup.
+   - NEVER leave raw LaTeX math commands like '\\angle', '\\Delta', or '\\frac' outside '$...$' delimiters.
+   - In JSON output, ALWAYS escape backslashes with double backslashes (e.g. write "\\\\frac", "\\\\times", "\\\\angle", "\\\\circ") so that JSON parsers do not interpret "\\t" as a tab character.
 3. Each object MUST match this schema according to its type:
 
 For MCQ ('mcq'):
@@ -356,44 +441,422 @@ Generate pedagogical, error-free, balanced questions with equal marks distributi
     .trim();
 
   try {
-    const sanitizeLatex = (val: any): any => {
-      if (typeof val === 'string') {
-        return val
-          .replace(/\t\s*ext\{/g, '\\text{')
-          .replace(/(^|[\s\=\+\-\(\[\$])ext\{([^\}]+)\}/g, '$1\\text{$2}')
-          .replace(/\\\\([a-zA-Z]+)/g, '\\$1');
-      }
-      return val;
-    };
-
     const parsed = JSON.parse(jsonText);
     if (Array.isArray(parsed)) {
-      return parsed.map((item, idx) => ({
-        id: `gen-${Date.now()}-${idx + 1}`,
-        section_name: item.section_name || 'General',
-        type: item.type || 'short_answer',
-        question_text: sanitizeLatex(item.question_text || ''),
-        options: item.options
-          ? Array.isArray(item.options)
-            ? item.options.map((opt: any) =>
-                typeof opt === 'string'
-                  ? sanitizeLatex(opt)
-                  : { ...opt, text: sanitizeLatex(opt.text || '') }
-              )
-            : item.options
-          : null,
-        correct_option: item.correct_option || null,
-        answer_text: sanitizeLatex(item.answer_text || null),
-        image_url: item.image_url || null,
-        marks: Number(item.marks) || 1,
-        difficulty: item.difficulty || 'medium',
-        chapter_title: item.chapter_title || '',
-      }));
+      return parsed.map((item, idx) => {
+        const secConfig = config.sections.find(
+          s => s.section_name.trim().toLowerCase() === (item.section_name || '').trim().toLowerCase()
+        );
+        return {
+          id: `gen-${Date.now()}-${idx + 1}`,
+          section_name: item.section_name || 'General',
+          sub_section: item.sub_section ? cleanHindiAndMathText(String(item.sub_section)) : (secConfig?.sub_section || undefined),
+          type: item.type || 'short_answer',
+          question_text: cleanHindiAndMathText(item.question_text || ''),
+          options: sanitizeQuestionOptions(item.options),
+          correct_option: item.correct_option ? cleanHindiAndMathText(String(item.correct_option)) : null,
+          answer_text: item.answer_text ? cleanHindiAndMathText(String(item.answer_text)) : null,
+          image_url: item.image_url || null,
+          marks: Number(item.marks) || 1,
+          difficulty: item.difficulty || 'medium',
+          chapter_title: cleanHindiAndMathText(item.chapter_title || ''),
+        };
+      });
     }
     throw new Error('AI output was not an array');
   } catch (err: any) {
     console.error('Error parsing AI questions response:', err, rawText);
     throw new Error('Failed to parse AI generated questions. Please try again.');
+  }
+}
+
+export interface DirectPdfItem {
+  buffer: Buffer;
+  mimeType?: string;
+  fileName?: string;
+}
+
+export interface DirectPdfQuestionGenerationConfig {
+  pdfBuffer?: Buffer;
+  pdfBuffers?: DirectPdfItem[];
+  mimeType?: string;
+  mode?: 'verbatim_paper' | 'generate_from_content';
+  className?: string;
+  subjectName?: string;
+  sections?: QuestionSectionConfig[];
+  language?: string;
+  customInstructions?: string;
+}
+
+export async function generateQuestionsDirectFromPdf(
+  config: DirectPdfQuestionGenerationConfig
+): Promise<GeneratedQuestionItem[]> {
+  const isVerbatim = config.mode === 'verbatim_paper';
+
+  const items: DirectPdfItem[] = [];
+  if (config.pdfBuffers && config.pdfBuffers.length > 0) {
+    items.push(...config.pdfBuffers);
+  } else if (config.pdfBuffer) {
+    items.push({
+      buffer: config.pdfBuffer,
+      mimeType: config.mimeType || 'application/pdf',
+      fileName: 'Document 1',
+    });
+  }
+
+  if (items.length === 0) {
+    throw new Error('At least one PDF document must be provided for AI generation');
+  }
+
+  const hasSections = Boolean(config.sections && config.sections.length > 0);
+  const sectionsDesc = hasSections
+    ? config.sections!
+        .map(
+          (s, idx) =>
+            `Section ${idx + 1}: "${s.section_name}"${s.sub_section ? ` (Subsection / Part: "${s.sub_section}")` : ''}${s.instructions ? ` (Instructions: "${s.instructions}")` : ''} -> Exactly ${s.count} question(s) of type "${s.type}" (${s.marks_per_question} mark(s) each, difficulty: ${s.difficulty || 'medium'})`
+        )
+        .join('\n')
+    : 'Extract all available questions organized into appropriate logical sections (Section A: MCQs, Section B: Short Answer, Section C: Long Answer, etc.)';
+
+  const multiChapterText = items.length > 1
+    ? `\n=== MULTI-CHAPTER / MULTI-DOCUMENT SYLLABUS COVERAGE ===
+You are provided with ${items.length} separate PDF document attachments (each representing a distinct chapter/unit of the exam syllabus):
+${items.map((it, idx) => `• PDF/Chapter ${idx + 1}: "${it.fileName || `Chapter ${idx + 1}`}"`).join('\n')}
+
+MANDATORY RULES FOR MULTI-CHAPTER EXAM:
+1. You MUST read all pages of ALL ${items.length} attached chapter PDFs.
+2. Distribute questions proportionally across ALL attached chapters so every chapter is tested across the sections.
+3. For each question object, accurately populate "chapter_title" with the name of the chapter/document it was derived from!
+4. CRITICAL: "chapter_title" is where the chapter name goes. NEVER put chapter names in "section_name"! "section_name" MUST strictly be the configured blueprint section name (e.g. "Section A: Multiple Choice Questions").`
+    : '';
+
+  const blueprintMandate = hasSections
+    ? `=== STRICT BLUEPRINT & SECTION CONFIGURATION MANDATE ===
+You MUST generate questions organized STRICTLY by the requested Blueprint Sections below.
+NEVER invent your own sections or use chapter titles as "section_name".
+For EACH configured section:
+1. The "section_name" property of EVERY question in that section MUST MATCH EXACTLY the section name provided below.
+2. You MUST generate EXACTLY the requested number of questions for that section.
+3. Every question in that section MUST HAVE the EXACT question type specified for that section.
+4. Set "marks" to the exact marks per question specified for that section.
+
+REQUESTED BLUEPRINT SECTIONS:
+${sectionsDesc}`
+    : `Organize questions into standard logical sections (e.g. "Section A: Multiple Choice Questions", "Section B: Fill in the Blanks", "Section C: Short Answer Questions", "Section D: Long Answer Questions").`;
+
+  const modeInstructions = isVerbatim
+    ? `=== MODE: VERBATIM ORIGINAL EXAM PAPER EXTRACTION ===
+- You are provided with original examination / test question paper document(s) directly as PDF.
+- You MUST carefully read and visually parse every single page of all uploaded documents.
+- EXTRACT AND TRANSCRIBE ALL QUESTIONS EXACTLY VERBATIM (word-for-word identical to the source document).
+- DO NOT rephrase, alter, summarize, or skip questions.
+- Preserve the exact question numbering, sub-questions (e.g. (a), (b), (i), (ii)), multiple choice options (A, B, C, D), and assigned marks.
+- Include a full, accurate model answer / solution text for each question in "answer_text".`
+    : `=== MODE: CURRICULUM-ALIGNED QUESTION GENERATION FROM TEXTBOOK PDFS ===
+- You are provided with textbook chapter(s), syllabus document(s), or study material directly as PDF.
+- Carefully examine all pages of the document(s) (including diagrams, tables, formulas, and text).
+- Formulate high-yield, academically rigorous examination questions SOLELY grounded in the facts, theorems, formulas, and content found in these PDFs.
+
+CRITICAL ZERO-HALLUCINATION TEXTBOOK EXTRACTION MANDATE:
+1. You MUST extract, formulate, and base questions STRICTLY on the actual exercises ("अभ्यास"), activities ("करके देखें" / "सोचिए और बताइए"), illustrations, and problem sets printed in the attached textbook PDF(s)!
+2. DO NOT make up questions from your own general imagination or external training data. Every question must reflect the real problems, questions, examples, and illustrations from the book.
+${blueprintMandate}`;
+
+  const customPrompt = config.customInstructions
+    ? `\nSpecial Instructions: ${config.customInstructions}`
+    : '';
+
+  const prompt = `You are a strict, top-tier academic exam paper creation engine.
+You are given direct PDF document(s) to process.
+
+CLASS / GRADE: ${config.className || 'General Grade'}
+SUBJECT: ${config.subjectName || 'General Subject'}
+LANGUAGE: ${config.language || 'English'}
+${modeInstructions}${multiChapterText}${customPrompt}
+
+STRICT LATEX & MATHEMATICAL FORMATTING RULES:
+1. PURE NATURAL LANGUAGE (HINDI / DEVANAGARI / REGIONAL):
+   - All questions, text, explanations, and options MUST be written in pure natural Unicode text.
+   - NEVER wrap Hindi words inside '\\text{...}' or '$ ... $'.
+   - Hindi words like 'संख्याओं', 'संख्याएँ', 'पैटर्न', 'आकृतियाँ', 'उत्तर' must be pure normal Hindi text.
+   - ONLY actual mathematical formulas, variables, and calculations (such as '$F + V - E = 2$', '$x^2 + y^2 = r^2$', '$2 \\times 3 = 6$', '$\\frac{1}{2}$') should be enclosed in '$ ... $'.
+2. MATH IN SINGLE DOLLARS: ALWAYS enclose ALL mathematical expressions, formulas, geometry terms, angles, fractions, and scientific symbols inside single dollar signs '$ ... $' (e.g. '$ABCD$', '$\\angle B = 90^\\circ$', '$\\Delta ABC$', '$\\frac{a}{b}$').
+3. NEVER leave raw LaTeX commands like '\\angle', '\\Delta', or '\\frac' outside '$...$' delimiters.
+4. JSON ESCAPING: In JSON strings, ALWAYS escape backslashes with double backslashes (e.g. write "\\\\frac", "\\\\times", "\\\\angle", "\\\\Delta", "\\\\circ") so JSON parsers do not interpret "\\t" as a tab character.
+5. STRICT EXAM QUESTION PHRASING (ZERO CHAPTER OR PAGE CITATIONS):
+   - Students do NOT have the textbook in front of them during an exam!
+   - NEVER cite chapter names, lesson titles, or page numbers in "question_text" or "answer_text".
+   - FORBIDDEN: "अध्याय 3 (हमारे चारों ओर पैटर्न) के पृष्ठ 1 के चित्र को देखकर...", "पाठ 2 के अनुसार...", "Chapter 3 page 5 figure...".
+   - REQUIRED: Always write standard exam phrasing like "दिए गए चित्र को देखकर बताइए कि...", "दी गई आकृति में...", "दिए गए पैटर्न को आगे बढ़ाइए...", "Look at the given picture and answer:".
+
+STRICT JSON OUTPUT REQUIREMENTS:
+Return ONLY a valid JSON array of question objects (no markdown code blocks, no intro, no conclusion prose).
+Each question object MUST follow the exact schema for its type:
+
+For Multiple Choice Questions ('mcq'):
+{
+  "section_name": "Section A: Multiple Choice Questions",
+  "type": "mcq",
+  "question_text": "Which part of a plant absorbs water from the soil?",
+  "options": [
+    { "label": "A", "text": "Root" },
+    { "label": "B", "text": "Stem" },
+    { "label": "C", "text": "Leaf" },
+    { "label": "D", "text": "Flower" }
+  ],
+  "correct_option": "A",
+  "answer_text": "A) Root absorbs water and mineral nutrients from the soil.",
+  "image_url": null,
+  "marks": 1,
+  "difficulty": "easy",
+  "chapter_title": "Chapter Name"
+}
+
+For Fill in the Blanks ('fill_blank'):
+{
+  "section_name": "Section B: Fill in the Blanks",
+  "type": "fill_blank",
+  "question_text": "The process of food synthesis in green plants using sunlight is called _______.",
+  "options": null,
+  "correct_option": null,
+  "answer_text": "Photosynthesis",
+  "image_url": null,
+  "marks": 1,
+  "difficulty": "easy",
+  "chapter_title": "Chapter Name"
+}
+
+For True / False ('true_false'):
+{
+  "section_name": "Section C: True or False",
+  "type": "true_false",
+  "question_text": "Light travels in a straight line through a uniform transparent medium.",
+  "options": null,
+  "correct_option": "True",
+  "answer_text": "True. Light exhibits rectilinear propagation in a homogeneous medium.",
+  "image_url": null,
+  "marks": 1,
+  "difficulty": "easy",
+  "chapter_title": "Chapter Name"
+}
+
+For Match the Following ('match_the_following'):
+{
+  "section_name": "Section D: Match the Following",
+  "type": "match_the_following",
+  "question_text": "Match the items in Column A with their correct corresponding items in Column B:",
+  "options": {
+    "column_a": [
+      { "label": "1", "text": "Chlorophyll" },
+      { "label": "2", "text": "Stomata" },
+      { "label": "3", "text": "Xylem" },
+      { "label": "4", "text": "Phloem" }
+    ],
+    "column_b": [
+      { "label": "A", "text": "Gas exchange" },
+      { "label": "B", "text": "Food transport" },
+      { "label": "C", "text": "Green pigment" },
+      { "label": "D", "text": "Water transport" }
+    ]
+  },
+  "correct_option": null,
+  "answer_text": "1 - C, 2 - A, 3 - D, 4 - B",
+  "image_url": null,
+  "marks": 4,
+  "difficulty": "medium",
+  "chapter_title": "Chapter Name"
+}
+
+For Short Answer ('short_answer'):
+{
+  "section_name": "Section E: Short Answer Questions",
+  "type": "short_answer",
+  "question_text": "Differentiate between autotrophic and heterotrophic nutrition with one example each.",
+  "options": null,
+  "correct_option": null,
+  "answer_text": "Autotrophs synthesize their own food (e.g. plants). Heterotrophs depend on others for nutrients (e.g. animals).",
+  "image_url": null,
+  "marks": 2,
+  "difficulty": "medium",
+  "chapter_title": "Chapter Name"
+}
+
+For Long Answer ('long_answer'):
+{
+  "section_name": "Section F: Long Answer Questions",
+  "type": "long_answer",
+  "question_text": "Explain Newton's Three Laws of Motion with suitable everyday examples and mathematical formulations.",
+  "options": null,
+  "correct_option": null,
+  "answer_text": "1. First Law (Inertia)... 2. Second Law (F = ma)... 3. Third Law (Action-Reaction)...",
+  "image_url": null,
+  "diagram_page": null,
+  "diagram_box": null,
+  "diagram_doc_index": 0,
+  "marks": 5,
+  "difficulty": "hard",
+  "chapter_title": "Chapter Name"
+}
+
+For Picture / Diagram Based Questions ('picture_based'):
+{
+  "section_name": "Section G: Picture / Diagram Based Questions",
+  "type": "picture_based",
+  "question_text": "चित्रों को देखकर वस्तुओं के नाम लिखिए। यहाँ यह भी लिखिए कि वस्तु का कौन-सा दृश्य (front/top/side view) दिया गया है।",
+  "options": null,
+  "correct_option": null,
+  "answer_text": "1. टेलीविज़न (सामने का दृश्य - Front view)\n2. सोफ़ा (सामने का दृश्य - Front view)\n3. चप्पल (ऊपर का दृश्य - Top view)",
+  "image_url": null,
+  "diagram_page": 3,
+  "diagram_box": [120, 80, 480, 920],
+  "diagram_doc_index": 0,
+  "marks": 3,
+  "difficulty": "medium",
+  "chapter_title": "Chapter Name"
+}
+
+AUTOMATIC DIAGRAM CROPPING MANDATE:
+Whenever ANY question (whether 'picture_based', 'mcq', 'short_answer', or 'fill_blank') requires or refers to a diagram, shape, geometric figure, object drawing, graph, or picture from the PDF:
+1. "diagram_page": Set to the 1-indexed page number of the PDF where the diagram is printed (e.g. 1, 2, 3...).
+2. "diagram_box": Set to [ymin, xmin, ymax, xmax] coordinates of the bounding box around that diagram normalized on a 0 to 1000 scale.
+   Example: If the diagram is located in the upper-middle of page 4, provide: [150, 60, 450, 940].
+3. "diagram_doc_index": 0 for Document 1, 1 for Document 2, etc.
+4. If a question is purely textual and has no diagram in the textbook, set "diagram_page": null, "diagram_box": null.
+
+Read the attached PDF document(s) carefully and generate the JSON array:`;
+
+  const inlineParts = items.map((it) => ({
+    inlineData: {
+      data: it.buffer.toString('base64'),
+      mimeType: it.mimeType || 'application/pdf',
+    },
+  }));
+
+  const result = await generateContentWithFallback([
+    prompt,
+    ...inlineParts,
+  ]);
+
+  const rawText = result.response.text().trim();
+  const jsonText = rawText
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  try {
+    const userSections = config.sections && config.sections.length > 0 ? config.sections : [];
+    const validSectionNames = new Set(userSections.map(s => s.section_name.trim().toLowerCase()));
+
+    const parsed = JSON.parse(jsonText);
+    if (Array.isArray(parsed)) {
+      let processed: GeneratedQuestionItem[] = parsed.map((item, idx) => {
+        let secName = (item.section_name || '').trim();
+        let chapTitle = (item.chapter_title || '').trim();
+
+        // Check if secName matches any configured section
+        const matchedConfig = userSections.find(
+          s => s.section_name.trim().toLowerCase() === secName.toLowerCase()
+        );
+
+        if (!matchedConfig && userSections.length > 0) {
+          // If AI used chapter name as section_name (e.g. contains "अध्याय" or "Chapter" or not matching blueprint)
+          if (!chapTitle || chapTitle === config.subjectName) {
+            chapTitle = secName;
+          }
+          // Try to match by question type
+          const typeMatch = userSections.find(s => s.type === item.type);
+          if (typeMatch) {
+            secName = typeMatch.section_name;
+          }
+        }
+
+        return {
+          id: `pdf-gen-${Date.now()}-${idx + 1}`,
+          section_name: secName || (userSections[0]?.section_name || 'General Questions'),
+          sub_section: item.sub_section ? cleanHindiAndMathText(String(item.sub_section)) : (matchedConfig?.sub_section || undefined),
+          type: item.type || (userSections[0]?.type || 'short_answer'),
+          question_text: cleanHindiAndMathText(item.question_text || ''),
+          options: sanitizeQuestionOptions(item.options),
+          correct_option: item.correct_option ? cleanHindiAndMathText(String(item.correct_option)) : null,
+          answer_text: item.answer_text ? cleanHindiAndMathText(String(item.answer_text)) : null,
+          image_url: item.image_url || null,
+          marks: Number(item.marks) || 1,
+          difficulty: item.difficulty || 'medium',
+          chapter_title: cleanHindiAndMathText(chapTitle || config.subjectName || ''),
+        };
+      });
+
+      // Fallback: If AI completely ignored configured section names
+      if (userSections.length > 0) {
+        const anySectionMatched = processed.some(q =>
+          validSectionNames.has(q.section_name.trim().toLowerCase())
+        );
+
+        if (!anySectionMatched) {
+          // Re-distribute questions sequentially to match configured sections
+          let currentQIdx = 0;
+          for (const sec of userSections) {
+            const targetCount = sec.count;
+            for (let c = 0; c < targetCount && currentQIdx < processed.length; c++) {
+              processed[currentQIdx].section_name = sec.section_name;
+              if (processed[currentQIdx].type === 'short_answer' && sec.type !== 'short_answer') {
+                processed[currentQIdx].type = sec.type;
+                processed[currentQIdx].marks = sec.marks_per_question;
+              }
+              currentQIdx++;
+            }
+          }
+          while (currentQIdx < processed.length) {
+            processed[currentQIdx].section_name = userSections[userSections.length - 1].section_name;
+            currentQIdx++;
+          }
+        }
+      }
+
+      // Automatic Diagram Cropping Execution
+      const cropTargets: CropTarget[] = [];
+      processed.forEach((q, idx) => {
+        const orig = parsed[idx];
+        if (
+          orig &&
+          typeof orig.diagram_page === 'number' &&
+          orig.diagram_page >= 1 &&
+          Array.isArray(orig.diagram_box) &&
+          orig.diagram_box.length === 4
+        ) {
+          cropTargets.push({
+            id: q.id!,
+            docIndex: typeof orig.diagram_doc_index === 'number' ? orig.diagram_doc_index : 0,
+            page: orig.diagram_page,
+            box: orig.diagram_box as [number, number, number, number],
+          });
+        }
+      });
+
+      if (cropTargets.length > 0) {
+        try {
+          const cropDocs: CropPdfDocument[] = items.map((it, idx) => ({
+            index: idx,
+            buffer: it.buffer,
+          }));
+          const croppedImages = await cropPdfDiagrams(cropDocs, cropTargets);
+          processed.forEach((q) => {
+            if (q.id && croppedImages[q.id]) {
+              q.image_url = croppedImages[q.id];
+            }
+          });
+        } catch (cropErr: any) {
+          console.warn('[Direct PDF] Auto-crop failed, continuing without diagram:', cropErr?.message || cropErr);
+        }
+      }
+
+      return processed;
+    }
+    throw new Error('AI output was not an array');
+  } catch (err: any) {
+    console.error('Error parsing AI questions direct from PDF response:', err, rawText);
+    throw new Error('Failed to parse questions generated from PDF. Please try again.');
   }
 }
 

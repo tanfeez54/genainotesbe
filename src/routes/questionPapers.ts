@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import { supabaseService } from '../lib/supabase';
 import { z } from 'zod';
 import { requireSchoolAccess } from '../middleware/schoolAccess';
-import { generateQuestionsWithAI, QuestionSectionConfig } from '../services/ai';
+import { generateQuestionsWithAI, generateQuestionsDirectFromPdf, QuestionSectionConfig } from '../services/ai';
 import { BillingService } from '../services/billingService';
 
 const router = Router();
@@ -221,7 +221,9 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
       sections: z.array(
         z.object({
           section_name: z.string(),
-          type: z.enum(['mcq', 'short_answer', 'long_answer', 'true_false', 'fill_blank', 'match_the_following']),
+          sub_section: z.string().optional(),
+          instructions: z.string().optional(),
+          type: z.enum(['mcq', 'short_answer', 'long_answer', 'true_false', 'fill_blank', 'match_the_following', 'picture_based']),
           count: z.number().min(1).max(50),
           marks_per_question: z.number().min(1).max(100),
           difficulty: z.enum(['easy', 'medium', 'hard']).optional().default('medium'),
@@ -293,17 +295,44 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
       contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + parsed.data.raw_ocr_text;
     }
 
-    // 3. Fetch chapter titles and chapter content if chapter_ids provided
+    const cloudflarePdfItems: Array<{ buffer: Buffer; mimeType: string; fileName: string }> = [];
+
+    // 3. Fetch chapter titles, chapter content, and attached Cloudflare R2 PDFs if chapter_ids provided
     if (parsed.data.chapter_ids && parsed.data.chapter_ids.length > 0) {
       const { data: chaps } = await supabaseService
         .from('chapters')
-        .select('id, title, content_text')
+        .select('id, title, content_text, scanned_documents(id, image_url, doc_type, status)')
         .in('id', parsed.data.chapter_ids);
 
       if (chaps && chaps.length > 0) {
         const newTitles = chaps.map(c => c.title);
         resolvedChapterTitles = Array.from(new Set([...resolvedChapterTitles, ...newTitles]));
         
+        for (const c of chaps) {
+          const scans = c.scanned_documents || [];
+          const pdfScans = scans.filter(
+            (s: any) =>
+              s.image_url &&
+              (s.image_url.toLowerCase().includes('.pdf') || s.image_url.includes('application/pdf'))
+          );
+
+          for (const ps of pdfScans) {
+            try {
+              const resp = await fetch(ps.image_url);
+              if (resp.ok) {
+                const arrayBuffer = await resp.arrayBuffer();
+                cloudflarePdfItems.push({
+                  buffer: Buffer.from(arrayBuffer),
+                  mimeType: 'application/pdf',
+                  fileName: `Chapter: ${c.title}`,
+                });
+              }
+            } catch (cfErr) {
+              console.warn(`[AI Generate] Error fetching Cloudflare PDF for chapter "${c.title}":`, cfErr);
+            }
+          }
+        }
+
         const chapTexts = chaps
           .map(c => c.content_text ? `Chapter "${c.title}":\n${c.content_text}` : '')
           .filter(Boolean)
@@ -336,15 +365,33 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
       return;
     }
 
-    const generatedQuestions = await generateQuestionsWithAI({
-      className: resolvedClassName,
-      subjectName: resolvedSubjectName,
-      chapterTitles: resolvedChapterTitles,
-      contextContent: contextOcrContent || undefined,
-      sections: parsed.data.sections as QuestionSectionConfig[],
-      language: parsed.data.language,
-      customInstructions: parsed.data.custom_instructions,
-    });
+    let generatedQuestions: any[];
+    let engineUsed = 'ocr_text';
+
+    // If Cloudflare R2 PDFs exist for the selected chapters, use Direct PDF Multimodal Engine!
+    if (cloudflarePdfItems.length > 0) {
+      console.log(`[AI Generate] Found ${cloudflarePdfItems.length} Cloudflare R2 PDF(s) for selected chapters. Generating via Direct Multimodal PDF engine.`);
+      generatedQuestions = await generateQuestionsDirectFromPdf({
+        pdfBuffers: cloudflarePdfItems,
+        mode: 'generate_from_content',
+        className: resolvedClassName,
+        subjectName: resolvedSubjectName,
+        sections: parsed.data.sections as QuestionSectionConfig[],
+        language: parsed.data.language,
+        customInstructions: parsed.data.custom_instructions,
+      });
+      engineUsed = 'cloudflare_pdf';
+    } else {
+      generatedQuestions = await generateQuestionsWithAI({
+        className: resolvedClassName,
+        subjectName: resolvedSubjectName,
+        chapterTitles: resolvedChapterTitles,
+        contextContent: contextOcrContent || undefined,
+        sections: parsed.data.sections as QuestionSectionConfig[],
+        language: parsed.data.language,
+        customInstructions: parsed.data.custom_instructions,
+      });
+    }
 
     // 2. Deduct ₹5 per generation fee atomically after successful generation
     let billingMeta = null;
@@ -365,7 +412,9 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
     }
 
     res.json({
-      message: 'Questions generated successfully with AI',
+      message: engineUsed === 'cloudflare_pdf' 
+        ? 'Questions generated directly from saved Cloudflare chapter PDFs!' 
+        : 'Questions generated successfully with AI',
       data: generatedQuestions,
       meta: {
         className: resolvedClassName,
@@ -373,12 +422,210 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
         chapters: resolvedChapterTitles,
         totalQuestions: generatedQuestions.length,
         totalMarks: generatedQuestions.reduce((acc, q) => acc + (q.marks || 0), 0),
+        engine: engineUsed,
+        cloudflare_pdfs_used: cloudflarePdfItems.length,
       },
       billing: billingMeta,
     });
   } catch (err: any) {
     console.error('AI Paper Generation Error:', err);
     res.status(500).json({ error: err.message || 'Failed to generate questions with AI' });
+  }
+});
+
+// POST /api/question-papers/ai-generate-from-pdf — Generate questions directly from an uploaded PDF
+router.post('/ai-generate-from-pdf', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const schema = z.object({
+      pdf_data: z.string().optional(),
+      pdf_files: z.array(
+        z.object({
+          name: z.string().optional(),
+          data: z.string().min(1, 'PDF data is required'),
+        })
+      ).optional(),
+      chapter_ids: z.array(z.string().uuid()).optional(),
+      pdf_urls: z.array(z.string()).optional(),
+      mode: z.enum(['verbatim_paper', 'generate_from_content']).default('generate_from_content'),
+      class_name: z.string().optional(),
+      subject_name: z.string().optional(),
+      language: z.string().optional().default('English'),
+      custom_instructions: z.string().optional(),
+      sections: z.array(
+        z.object({
+          section_name: z.string(),
+          sub_section: z.string().optional(),
+          instructions: z.string().optional(),
+          type: z.enum(['mcq', 'short_answer', 'long_answer', 'true_false', 'fill_blank', 'match_the_following', 'picture_based']),
+          count: z.number().min(1).max(50),
+          marks_per_question: z.number().min(1).max(100),
+          difficulty: z.enum(['easy', 'medium', 'hard']).optional().default('medium'),
+        })
+      ).optional().default([]),
+    }).refine(
+      (data) =>
+        (data.pdf_files && data.pdf_files.length > 0) ||
+        !!data.pdf_data ||
+        (data.chapter_ids && data.chapter_ids.length > 0) ||
+        (data.pdf_urls && data.pdf_urls.length > 0),
+      {
+        message: 'At least one PDF file (pdf_files, pdf_data, pdf_urls, or chapter_ids with saved PDFs) is required',
+      }
+    );
+
+    const parsed = schema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({ error: 'Validation failed', details: parsed.error.flatten() });
+      return;
+    }
+
+    const schoolId = req.school_id;
+    const userId = req.userId;
+
+    if (!schoolId) {
+      res.status(400).json({ error: 'School context missing from request' });
+      return;
+    }
+
+    // 1. Check subscription validity and wallet balance (minimum ₹5 required)
+    const allowance = await BillingService.checkGenerationAllowance(schoolId);
+    if (!allowance.allowed) {
+      res.status(402).json({
+        error: allowance.reason || 'Insufficient balance or subscription expired',
+        code: 'INSUFFICIENT_FUNDS_OR_EXPIRED',
+        current_balance: allowance.currentBalance,
+        cost_per_generation: allowance.cost,
+        remaining_generations: allowance.generationsRemaining,
+      });
+      return;
+    }
+
+    // 2. Resolve PDF buffers & MIME types (supports uploaded files, direct Cloudflare URLs, or saved chapters)
+    const rawFiles: Array<{ name?: string; data: string }> = [];
+    if (parsed.data.pdf_files && parsed.data.pdf_files.length > 0) {
+      rawFiles.push(...parsed.data.pdf_files);
+    } else if (parsed.data.pdf_data) {
+      rawFiles.push({ name: 'Document 1', data: parsed.data.pdf_data });
+    }
+
+    // If direct Cloudflare URLs provided
+    if (parsed.data.pdf_urls && parsed.data.pdf_urls.length > 0) {
+      parsed.data.pdf_urls.forEach((url, uIdx) => {
+        rawFiles.push({ name: `Cloudflare Doc ${uIdx + 1}`, data: url });
+      });
+    }
+
+    // If chapter_ids provided, resolve their Cloudflare R2 PDFs from database
+    if (parsed.data.chapter_ids && parsed.data.chapter_ids.length > 0) {
+      const { data: chaps } = await supabaseService
+        .from('chapters')
+        .select('id, title, scanned_documents(id, image_url, doc_type, status)')
+        .in('id', parsed.data.chapter_ids);
+
+      if (chaps && chaps.length > 0) {
+        for (const c of chaps) {
+          const scans = c.scanned_documents || [];
+          const pdfScans = scans.filter(
+            (s: any) =>
+              s.image_url &&
+              (s.image_url.toLowerCase().includes('.pdf') || s.image_url.includes('application/pdf'))
+          );
+          for (const ps of pdfScans) {
+            rawFiles.push({
+              name: `Chapter: ${c.title}`,
+              data: ps.image_url,
+            });
+          }
+        }
+      }
+    }
+
+    const resolvedPdfItems: Array<{ buffer: Buffer; mimeType: string; fileName?: string }> = [];
+
+    for (let i = 0; i < rawFiles.length; i++) {
+      const item = rawFiles[i];
+      let pdfBuffer: Buffer;
+      let mimeType = 'application/pdf';
+      const pdfData = item.data;
+
+      if (pdfData.startsWith('data:')) {
+        const parts = pdfData.split(',');
+        const mimeMatch = parts[0].match(/:(.*?);/);
+        if (mimeMatch) mimeType = mimeMatch[1].trim();
+        pdfBuffer = Buffer.from(parts[1], 'base64');
+      } else if (pdfData.startsWith('http://') || pdfData.startsWith('https://')) {
+        const resp = await fetch(pdfData);
+        if (!resp.ok) throw new Error(`Failed to download PDF ${item.name || i + 1} from URL (HTTP ${resp.status})`);
+        const arrayBuffer = await resp.arrayBuffer();
+        pdfBuffer = Buffer.from(arrayBuffer);
+        const headMime = resp.headers.get('content-type');
+        if (headMime && !headMime.includes('octet-stream')) {
+          mimeType = headMime.split(';')[0].trim();
+        }
+      } else {
+        // Raw base64 string
+        pdfBuffer = Buffer.from(pdfData, 'base64');
+      }
+
+      // Detect accurate mime type (if buffer starts with %PDF)
+      if (pdfBuffer.length >= 4 && pdfBuffer[0] === 0x25 && pdfBuffer[1] === 0x50 && pdfBuffer[2] === 0x44 && pdfBuffer[3] === 0x46) {
+        mimeType = 'application/pdf';
+      }
+
+      resolvedPdfItems.push({
+        buffer: pdfBuffer,
+        mimeType,
+        fileName: item.name || `Chapter ${i + 1}`,
+      });
+    }
+
+    const resolvedClassName = parsed.data.class_name || 'General Grade';
+    const resolvedSubjectName = parsed.data.subject_name || 'General Subject';
+
+    // 3. Call AI to process PDFs directly
+    const generatedQuestions = await generateQuestionsDirectFromPdf({
+      pdfBuffers: resolvedPdfItems,
+      mode: parsed.data.mode,
+      className: resolvedClassName,
+      subjectName: resolvedSubjectName,
+      sections: parsed.data.sections as QuestionSectionConfig[],
+      language: parsed.data.language,
+      customInstructions: parsed.data.custom_instructions,
+    });
+
+    // 4. Deduct fee atomically
+    let billingMeta = null;
+    try {
+      const deduction = await BillingService.deductGenerationFee(
+        schoolId,
+        userId,
+        undefined,
+        `AI PDF Question Paper Generation (${resolvedClassName} - ${resolvedSubjectName})`
+      );
+      billingMeta = {
+        cost_deducted: deduction.costDeducted,
+        new_balance: deduction.newBalance,
+        generations_remaining: Math.floor(deduction.newBalance / 5),
+      };
+    } catch (billingErr: any) {
+      console.warn('[AI Generate from PDF] Billing deduction warning:', billingErr);
+    }
+
+    res.json({
+      message: 'Questions generated directly from PDF successfully with AI',
+      data: generatedQuestions,
+      meta: {
+        className: resolvedClassName,
+        subjectName: resolvedSubjectName,
+        totalQuestions: generatedQuestions.length,
+        totalMarks: generatedQuestions.reduce((acc, q) => acc + (q.marks || 0), 0),
+        mode: parsed.data.mode,
+      },
+      billing: billingMeta,
+    });
+  } catch (err: any) {
+    console.error('AI PDF Paper Generation Error:', err);
+    res.status(500).json({ error: err.message || 'Failed to generate questions from PDF with AI' });
   }
 });
 
