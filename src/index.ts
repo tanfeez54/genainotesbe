@@ -1,4 +1,14 @@
 import 'dotenv/config';
+import dns from 'dns';
+
+// Ensure reliable DNS resolution for Cloudflare R2 and external AI endpoints
+try {
+  dns.setServers(['8.8.8.8', '1.1.1.1', '8.8.4.4']);
+} catch (e) {
+  console.warn('DNS server configuration warning:', e);
+}
+// Hot reload trigger: lesson-suite-json-fix-v2
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';

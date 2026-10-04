@@ -26,6 +26,7 @@ router.post('/generate-lesson-suite', async (req: Request, res: Response) => {
       customInstructions,
       scan_ids,
       raw_ocr_text,
+      pdf_url,
     } = req.body;
 
     let resolvedClassName = className || '';
@@ -52,34 +53,79 @@ router.post('/generate-lesson-suite', async (req: Request, res: Response) => {
     }
 
     let contextOcrContent = raw_ocr_text || '';
+    let resolvedPdfUrl = pdf_url || null;
+    let pdfBuffer: Buffer | undefined = undefined;
 
-    // 1. Fetch from specific scan_ids if selected (strictly syllabus / textbook scans)
+    // 1. Fetch from specific scan_ids if selected
     if (Array.isArray(scan_ids) && scan_ids.length > 0) {
       const { data: scans } = await supabaseAdmin
         .from('scanned_documents')
-        .select('raw_ocr_text, doc_type')
-        .in('id', scan_ids)
-        .in('doc_type', ['chapter_syllabus', 'chapter_page']);
+        .select('id, image_url, raw_ocr_text, doc_type')
+        .in('id', scan_ids);
       if (scans && scans.length > 0) {
-        const texts = scans.map((s, idx) => `[SCANNED SYLLABUS / TEXTBOOK PAGE ${idx + 1}]:\n${s.raw_ocr_text}`).filter(Boolean).join('\n\n');
-        contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + texts;
+        for (const s of scans) {
+          if (s.raw_ocr_text && s.raw_ocr_text.trim()) {
+            contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + `[SCANNED TEXTBOOK PAGE]:\n${s.raw_ocr_text.trim()}`;
+          }
+        }
+        if (!resolvedPdfUrl) {
+          const httpPdf = scans.find((s: any) => s.image_url?.startsWith('http') && (s.image_url.toLowerCase().includes('.pdf') || s.image_url.includes('.r2.dev')));
+          const anyPdf = scans.find((s: any) => s.image_url && (s.image_url.toLowerCase().includes('.pdf') || s.image_url.includes('application/pdf') || s.image_url.includes('.r2.dev')));
+          resolvedPdfUrl = httpPdf?.image_url || anyPdf?.image_url || null;
+        }
       }
     } else if (chapter_id) {
-      // 2. Automatically load all syllabus OCR scans attached to this chapter (isolated from question paper scans)
-      const { data: scans } = await supabaseAdmin
-        .from('scanned_documents')
-        .select('raw_ocr_text, doc_type')
-        .eq('chapter_id', chapter_id)
-        .in('doc_type', ['chapter_syllabus', 'chapter_page']);
-      if (scans && scans.length > 0) {
-        const texts = scans.map((s, idx) => `[SCANNED SYLLABUS / TEXTBOOK PAGE ${idx + 1}]:\n${s.raw_ocr_text}`).filter(Boolean).join('\n\n');
-        contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + texts;
-      }
+      // 2. Automatically load all documents & scans attached to this chapter
+      const { data: ch } = await supabaseAdmin
+        .from('chapters')
+        .select('id, title, content_text, scanned_documents(id, image_url, doc_type, raw_ocr_text)')
+        .eq('id', chapter_id)
+        .maybeSingle();
 
-      // Also check if chapter has content_text
-      const { data: ch } = await supabaseAdmin.from('chapters').select('content_text').eq('id', chapter_id).maybeSingle();
-      if (ch?.content_text) {
-        contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + `[CHAPTER SYLLABUS & NOTES]:\n${ch.content_text}`;
+      if (ch) {
+        if (!resolvedChapterTitle && ch.title) {
+          resolvedChapterTitle = ch.title;
+        }
+        if (ch.content_text) {
+          contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + `[CHAPTER SYLLABUS & NOTES]:\n${ch.content_text}`;
+        }
+        const scans = ch.scanned_documents || [];
+        for (const s of scans) {
+          if (s.raw_ocr_text && s.raw_ocr_text.trim()) {
+            contextOcrContent = (contextOcrContent ? contextOcrContent + '\n\n' : '') + `[SCANNED TEXTBOOK PAGE]:\n${s.raw_ocr_text.trim()}`;
+          }
+        }
+        if (!resolvedPdfUrl) {
+          const httpPdf = scans.find((s: any) => s.image_url?.startsWith('http') && (s.image_url.toLowerCase().includes('.pdf') || s.image_url.includes('.r2.dev')));
+          const anyPdf = scans.find((s: any) => s.image_url && (s.image_url.toLowerCase().includes('.pdf') || s.image_url.includes('application/pdf') || s.image_url.includes('.r2.dev')));
+          resolvedPdfUrl = httpPdf?.image_url || anyPdf?.image_url || null;
+        }
+      }
+    }
+
+    // If a Cloudflare / CDN PDF or Base64 PDF exists, resolve the buffer directly for Gemini multimodal grounding
+    if (resolvedPdfUrl) {
+      try {
+        if (resolvedPdfUrl.startsWith('data:')) {
+          console.log(`[Lesson Suite] Direct Base64 data URI detected. Decoding buffer immediately without HTTP fetch...`);
+          const base64Data = resolvedPdfUrl.includes(';base64,')
+            ? resolvedPdfUrl.split(';base64,')[1]
+            : resolvedPdfUrl.replace(/^data:[^,]+,/, '');
+          pdfBuffer = Buffer.from(base64Data, 'base64');
+          console.log(`[Lesson Suite] Successfully decoded Base64 PDF buffer (${(pdfBuffer.length / 1024 / 1024).toFixed(2)} MB)`);
+        } else {
+          console.log(`[Lesson Suite] Fetching Cloudflare chapter PDF: ${resolvedPdfUrl}`);
+          const pdfRes = await fetch(resolvedPdfUrl);
+          if (pdfRes.ok) {
+            const ab = await pdfRes.arrayBuffer();
+            pdfBuffer = Buffer.from(ab);
+            console.log(`[Lesson Suite] Loaded Cloudflare PDF successfully (${(pdfBuffer.length / 1024 / 1024).toFixed(2)} MB)`);
+          } else {
+            console.warn(`[Lesson Suite Warning] Failed to fetch Cloudflare PDF (${pdfRes.status} ${pdfRes.statusText})`);
+          }
+        }
+      } catch (pdfErr: any) {
+        console.warn('[Lesson Suite Warning] Error fetching Cloudflare PDF buffer:', pdfErr?.message || pdfErr);
       }
     }
 
@@ -91,12 +137,16 @@ router.post('/generate-lesson-suite', async (req: Request, res: Response) => {
       language: language || 'English',
       customInstructions,
       contextContent: contextOcrContent || undefined,
+      pdfBuffer: pdfBuffer || undefined,
+      pdfUrl: resolvedPdfUrl || undefined,
     });
 
     res.json({
       message: '7-Core Teacher Lesson Suite generated successfully',
       data: suite,
-      scans_used: Boolean(contextOcrContent),
+      scans_used: Boolean(contextOcrContent || pdfBuffer),
+      pdf_used: Boolean(pdfBuffer),
+      pdf_url: resolvedPdfUrl || null,
     });
   } catch (err: any) {
     console.error('Lesson Suite Generation Error:', err);
