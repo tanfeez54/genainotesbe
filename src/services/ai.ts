@@ -7,31 +7,52 @@ import { cropPdfDiagrams, CropTarget, CropPdfDocument } from './pdfCropService';
 if (!process.env.GEMINI_API_KEY) throw new Error('GEMINI_API_KEY is required');
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
 
-export async function generateContentWithFallback(promptOrParts: any, generationConfig?: any) {
+export async function generateContentWithFallback(
+  promptOrParts: any,
+  generationConfig?: any,
+  preferredModel?: string
+) {
   const models = [
+    preferredModel,
     process.env.GEMINI_MODEL,
-    'gemini-3.8-flash',
     'gemini-3.5-flash-lite',
     'gemini-3.5-flash',
-    'gemini-flash-latest',
+    'gemini-3.6-flash',
+    'gemini-3.7-flash',
+    'gemini-3.8-flash',
+    'gemini-4-hydrogen',
+    'gemini-4-argon',
+    'gemini-4-carbon',
+    'gemini-4-neon',
+    'gemini-2.5-flash',
+    'gemini-2.5-pro',
+    'gemini-3.1-flash-lite',
   ].filter(Boolean) as string[];
   const uniqueModels = Array.from(new Set(models));
 
   let lastError: any = null;
   for (const modelName of uniqueModels) {
-    try {
-      const modelOptions: any = { model: modelName };
-      if (generationConfig) {
-        modelOptions.generationConfig = generationConfig;
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const modelOptions: any = { model: modelName };
+        if (generationConfig) {
+          modelOptions.generationConfig = generationConfig;
+        }
+        const m = genAI.getGenerativeModel(modelOptions);
+        const result = await m.generateContent(promptOrParts);
+        return result;
+      } catch (err: any) {
+        console.warn(`[AI Service Warning] Model ${modelName} (attempt ${attempt}) failed:`, err?.message || err);
+        lastError = err;
+        if (err?.status === 503 && attempt === 1) {
+          // Brief 1s delay if overloaded before retrying
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          continue;
+        }
+        break;
       }
-      const m = genAI.getGenerativeModel(modelOptions);
-      const result = await m.generateContent(promptOrParts);
-      return result;
-    } catch (err: any) {
-      console.warn(`[AI Service Warning] Model ${modelName} failed:`, err?.message || err);
-      lastError = err;
     }
   }
   throw lastError || new Error('All AI models failed to generate content');
@@ -1076,6 +1097,124 @@ Read the attached PDF document(s) carefully and generate the JSON array:`;
     console.error('Error parsing AI questions direct from PDF response:', err, rawText);
     throw new Error('Failed to parse questions generated from PDF. Please try again.');
   }
+}
+
+export interface RawMediaItem {
+  buffer: Buffer;
+  mimeType: string;
+  fileName?: string;
+}
+
+export interface ExtractedRawPaperResult {
+  header: {
+    school_name?: string | null;
+    exam_title?: string;
+    class_name?: string;
+    subject_name?: string;
+    total_marks?: number;
+    time_allowed?: string;
+    date?: string | null;
+    instructions?: string;
+  };
+  questions: GeneratedQuestionItem[];
+}
+
+export async function extractQuestionPaperFromMedia(
+  items: RawMediaItem[],
+  customInstructions?: string,
+  preferredModel?: string
+): Promise<ExtractedRawPaperResult> {
+  const inlineParts = items.map((it) => ({
+    inlineData: {
+      data: it.buffer.toString('base64'),
+      mimeType: it.mimeType || 'image/jpeg',
+    },
+  }));
+
+  const prompt = `You are a world-class academic examination transcriber and OCR expert specialized in school exam papers (including Pre-Primary, Nursery, L.K.G, U.K.G, Primary, and High School handwritten tests, worksheets, and printed papers).
+Analyze the provided handwritten, photographed, or scanned document(s) with 100% ZERO-ERROR precision.
+
+CRITICAL OCR & VERBATIM TRANSCRIPTION GUIDELINES (ZERO-ERROR MANDATE):
+1. ACCURATE HANDWRITING DECIPHERING & SPELLING:
+   - Carefully decipher handwritten text, cursive handwriting, and teacher notes without substituting or misreading letters.
+   - For phonics / word family questions (e.g. "Write the four 'ill' sound words", "at sound words", "ee sound words"): recognize phonics patterns accurately. Do not confuse 'ill' with roman numbers or 'all'.
+   - Accurately transcribe bilingual Hindi and English text with correct Devanagari Unicode spelling (e.g. पंखा - Fan, चावल - _______, भोर - _______, सुबह - _______, कोमल - Komal).
+   - If a word is crossed out or corrected by the teacher in the original image (e.g. "four" written over another word), transcribe the intended final corrected word.
+
+2. QUESTION-CUM-ANSWER (SOLVE-INSIDE-PAPER) & BLANK SPACES FORMATTING:
+   - For Kindergarten (KG/UKG/LKG) and Primary worksheets, kids solve the paper directly on the sheet.
+   - Every single answer spot MUST have a distinct, generous blank space: "_______".
+   - If a question asks for N items (e.g. "Write the four 'ill' sound words"), generate EXACTLY N distinct blank underlines:
+     "_______   _______\n_______   _______"
+   - If sub-items have prompts (e.g. "Book - Books", "Pen - _______", "Tiger - _______", "Animal - _______"), keep every sub-item on its own line with matching "_______" so kids have enough room to write on the paper!
+   - For pattern sequence questions (e.g. "^ V ^ V", "M W M W", "■ ■ ■ ■"), transcribe the exact symbols followed by the exact number of blanks requested (e.g. "(i) ^ V ^ V   _______   _______   _______").
+
+3. HEADER METADATA DETECTION:
+   - "school_name": Detected school / institute name if explicitly visible, otherwise null.
+   - "exam_title": Detected terminal title (e.g. "1st Terminal Examination", "2nd Terminal Examination", "3rd Terminal Examination", "Annual Examination", "Class Assessment").
+   - "class_name": Detected class or grade (e.g. "U.K.G", "L.K.G", "Nursery", "Class 1", "Class 2").
+   - "subject_name": Detected subject (e.g. "English", "Hindi", "Mathematics", "EVS", "Science").
+   - "total_marks": Full marks (F.M.) as a number (e.g. 20, 25, 50). If stated as "F.M- 20 Marks", extract 20.
+   - "time_allowed": Time allowed (e.g. "45 Mins", "1 Hour") or standard duration.
+   - "date": Formatted date string (e.g. "20/11/2026") or null.
+   - "instructions": Standard test instructions.
+
+4. ACCURATE MARKS RECONSTRUCTION:
+   - Preserve circled marks next to each question, e.g. (3), (2), [3], [2].
+   - Ensure individual question marks sum up correctly to the total marks.
+
+5. SINGLE-PAGE & 20-MARKS CLASS TEST OPTIMIZATION:
+   - For standard 10-25 marks tests (e.g. F.M. 20 Marks, weekly/terminal test from a single notebook page):
+     - DO NOT invent unnecessary artificial section names like "Section A", "Section B" unless explicitly written on the paper. Set "section_name": null so the paper renders seamlessly without bulky section banners.
+     - For math / division questions (e.g. Divide: 2 ) 98 (, 3 ) 972 (, 5 ) 7380 (): Keep the format clean and verbatim:
+       "Divide (÷) :\n(i) 2 ) 98 (\n(ii) 3 ) 972 (\n(iii) 4 ) 48 (\n(iv) 5 ) 7380 (\n(v) 6 ) 386 ("
+     - Keep question text crisp and structured so that small 20-mark tests fit completely onto a SINGLE A4 PAGE when printed/downloaded as PDF.
+
+6. VERIFICATION STEP BEFORE RETURNING JSON:
+   - Verify every character of Hindi and English text for absolute spelling accuracy.
+   - Verify that all questions (1., 2., 3., 4., 5...) from all uploaded pages are captured completely without skipping any question.
+   - Format cleanly in valid JSON matching the exact schema.
+
+${customInstructions ? `USER CUSTOM INSTRUCTIONS:\n${customInstructions}\n` : ''}
+
+RETURN STRICTLY A JSON OBJECT MATCHING THIS SCHEMA:
+{
+  "header": {
+    "school_name": null,
+    "exam_title": "1st Terminal Examination",
+    "class_name": "U.K.G",
+    "subject_name": "English",
+    "total_marks": 20,
+    "time_allowed": "45 Mins",
+    "date": "20/11/2026",
+    "instructions": "1. Attempt all questions.\\n2. Write answers clearly in the spaces provided."
+  },
+  "questions": [
+    {
+      "section_name": null,
+      "sub_section": null,
+      "type": "fill_blank",
+      "question_text": "Write the singular to plural:\\nBook - Books\\nPen - _______\\nTiger - _______\\nAnimal - _______",
+      "options": null,
+      "answer_text": "Pen - Pens, Tiger - Tigers, Animal - Animals",
+      "marks": 3,
+      "difficulty": "easy"
+    }
+  ]
+}`;
+
+  const result = await generateContentWithFallback(
+    [prompt, ...inlineParts],
+    {
+      temperature: 0.1,
+      responseMimeType: 'application/json',
+    },
+    preferredModel
+  );
+
+  const rawText = result.response.text().trim();
+  const parsed = cleanAndParseJson<ExtractedRawPaperResult>(rawText);
+  return parsed;
 }
 
 export interface LessonSuiteConfig {

@@ -283,11 +283,19 @@ router.post(['/:id/process', '/:id/ocr-process'], requireSchoolAccess(['super_ad
 
     // 4. Send to Gemini for Complete Verbatim OCR Text Extraction with Multi-Model Fallback
     const candidateModels = [
-      process.env.GEMINI_MODEL,
-      'gemini-3.5-flash',
-      'gemini-flash-latest',
+      scan.preferred_model || process.env.GEMINI_MODEL,
       'gemini-3.5-flash-lite',
+      'gemini-3.5-flash',
+      'gemini-3.6-flash',
+      'gemini-3.7-flash',
       'gemini-3.8-flash',
+      'gemini-4-hydrogen',
+      'gemini-4-argon',
+      'gemini-4-carbon',
+      'gemini-4-neon',
+      'gemini-2.5-flash',
+      'gemini-2.5-pro',
+      'gemini-3.1-flash-lite',
     ].filter(Boolean) as string[];
     const uniqueModels = Array.from(new Set(candidateModels));
 

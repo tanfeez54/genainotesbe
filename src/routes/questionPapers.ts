@@ -2,7 +2,13 @@ import { Router, Request, Response } from 'express';
 import { supabaseService } from '../lib/supabase';
 import { z } from 'zod';
 import { requireSchoolAccess } from '../middleware/schoolAccess';
-import { generateQuestionsWithAI, generateQuestionsDirectFromPdf, QuestionSectionConfig } from '../services/ai';
+import {
+  generateQuestionsWithAI,
+  generateQuestionsDirectFromPdf,
+  QuestionSectionConfig,
+  extractQuestionPaperFromMedia,
+  RawMediaItem,
+} from '../services/ai';
 import { BillingService } from '../services/billingService';
 
 const router = Router();
@@ -626,6 +632,61 @@ router.post('/ai-generate-from-pdf', requireSchoolAccess(['super_admin', 'school
   } catch (err: any) {
     console.error('AI PDF Paper Generation Error:', err);
     res.status(500).json({ error: err.message || 'Failed to generate questions from PDF with AI' });
+  }
+});
+
+// POST /api/question-papers/extract-from-media — Analyze images or PDF of exam paper and extract header + questions
+router.post('/extract-from-media', requireSchoolAccess(['super_admin', 'school_admin', 'teacher', 'data_entry']), async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { media_files, custom_instructions, model } = req.body;
+    if (!Array.isArray(media_files) || media_files.length === 0) {
+      res.status(400).json({ error: 'At least one image or PDF file is required' });
+      return;
+    }
+
+    const resolvedItems: RawMediaItem[] = [];
+    for (let i = 0; i < media_files.length; i++) {
+      const it = media_files[i];
+      let buf: Buffer;
+      let mime = it.mimeType || 'image/jpeg';
+      const d = it.data || '';
+
+      if (d.startsWith('data:')) {
+        const parts = d.split(',');
+        const mimeMatch = parts[0].match(/:(.*?);/);
+        if (mimeMatch) mime = mimeMatch[1].trim();
+        buf = Buffer.from(parts[1], 'base64');
+      } else if (d.startsWith('http://') || d.startsWith('https://')) {
+        const resp = await fetch(d);
+        if (!resp.ok) throw new Error(`Failed to download file from URL (HTTP ${resp.status})`);
+        const ab = await resp.arrayBuffer();
+        buf = Buffer.from(ab);
+        const hm = resp.headers.get('content-type');
+        if (hm) mime = hm.split(';')[0].trim();
+      } else {
+        buf = Buffer.from(d, 'base64');
+      }
+
+      if (buf.length >= 4 && buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46) {
+        mime = 'application/pdf';
+      }
+
+      resolvedItems.push({
+        buffer: buf,
+        mimeType: mime,
+        fileName: it.name || `Document ${i + 1}`,
+      });
+    }
+
+    const extracted = await extractQuestionPaperFromMedia(resolvedItems, custom_instructions, model);
+
+    res.json({
+      success: true,
+      data: extracted,
+    });
+  } catch (err: any) {
+    console.error('Extract from media error:', err);
+    res.status(500).json({ error: err.message || 'Failed to extract paper from images/PDF' });
   }
 });
 
