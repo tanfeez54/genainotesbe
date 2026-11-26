@@ -547,4 +547,36 @@ router.post('/:id/invite', async (req: Request, res: Response): Promise<void> =>
   }
 });
 
+// GET /api/schools/proxy-logo — Fetch external logo image with CORS headers for PDF export
+router.get('/proxy-logo', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const url = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+    if (!url || (!url.startsWith('https://') && !url.startsWith('http://'))) {
+      res.status(400).json({ error: 'Invalid image URL' });
+      return;
+    }
+
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      res.status(resp.status).json({ error: 'Failed to fetch image' });
+      return;
+    }
+
+    const contentType = resp.headers.get('content-type') || 'image/png';
+    if (!contentType.startsWith('image/')) {
+      res.status(400).json({ error: 'URL did not return an image' });
+      return;
+    }
+
+    const ab = await resp.arrayBuffer();
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.send(Buffer.from(ab));
+  } catch (err) {
+    console.error('Logo proxy error:', err);
+    res.status(500).json({ error: 'Failed to proxy image' });
+  }
+});
+
 export default router;
