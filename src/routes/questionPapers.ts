@@ -385,6 +385,7 @@ router.post('/ai-generate', requireSchoolAccess(['super_admin', 'school_admin', 
         sections: parsed.data.sections as QuestionSectionConfig[],
         language: parsed.data.language,
         customInstructions: parsed.data.custom_instructions,
+        preferredModel: typeof req.body.model === 'string' ? req.body.model : undefined,
       });
       engineUsed = 'cloudflare_pdf';
     } else {
@@ -597,6 +598,7 @@ router.post('/ai-generate-from-pdf', requireSchoolAccess(['super_admin', 'school
       sections: parsed.data.sections as QuestionSectionConfig[],
       language: parsed.data.language,
       customInstructions: parsed.data.custom_instructions,
+      preferredModel: typeof req.body.model === 'string' ? req.body.model : undefined,
     });
 
     // 4. Deduct fee atomically

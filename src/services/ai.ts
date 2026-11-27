@@ -17,18 +17,14 @@ export async function generateContentWithFallback(
   const models = [
     preferredModel,
     process.env.GEMINI_MODEL,
-    'gemini-3.5-flash-lite',
-    'gemini-3.5-flash',
-    'gemini-3.6-flash',
-    'gemini-3.7-flash',
     'gemini-3.8-flash',
-    'gemini-4-hydrogen',
-    'gemini-4-argon',
-    'gemini-4-carbon',
-    'gemini-4-neon',
     'gemini-2.5-flash',
+    'gemini-3.7-flash',
+    'gemini-3.6-flash',
+    'gemini-3.5-flash',
+    'gemini-4-hydrogen',
+    'gemini-3.5-flash-lite',
     'gemini-2.5-pro',
-    'gemini-3.1-flash-lite',
   ].filter(Boolean) as string[];
   const uniqueModels = Array.from(new Set(models));
 
@@ -725,6 +721,7 @@ export interface DirectPdfQuestionGenerationConfig {
   sections?: QuestionSectionConfig[];
   language?: string;
   customInstructions?: string;
+  preferredModel?: string;
 }
 
 export async function generateQuestionsDirectFromPdf(
@@ -757,7 +754,13 @@ export async function generateQuestionsDirectFromPdf(
         .join('\n')
     : 'Extract all available questions organized into appropriate logical sections (Section A: MCQs, Section B: Short Answer, Section C: Long Answer, etc.)';
 
-  const multiChapterText = items.length > 1
+  const allPagesRule = `\n=== MANDATORY ALL-PAGES PDF COVERAGE RULE (CRITICAL) ===
+- NEVER generate all questions from Page 1 alone!
+- You MUST read, scan, and analyze EVERY SINGLE PAGE of EVERY attached PDF document (Page 1, Page 2, Page 3, ..., middle pages, and final pages / exercises up to the very last page).
+- In "generate_from_content" mode: Spread and distribute questions evenly across ALL pages and topics of the PDF(s) (beginning pages, middle pages, and end pages).
+- In "verbatim_paper" mode: Extract EVERY question from EVERY page (Page 1 through the final page) without stopping after Page 1.`;
+
+  const multiChapterText = (items.length > 1
     ? `\n=== MULTI-CHAPTER / MULTI-DOCUMENT SYLLABUS COVERAGE ===
 You are provided with ${items.length} separate PDF document attachments (each representing a distinct chapter/unit of the exam syllabus):
 ${items.map((it, idx) => `• PDF/Chapter ${idx + 1}: "${it.fileName || `Chapter ${idx + 1}`}"`).join('\n')}
@@ -767,7 +770,7 @@ MANDATORY RULES FOR MULTI-CHAPTER EXAM:
 2. Distribute questions proportionally across ALL attached chapters so every chapter is tested across the sections.
 3. For each question object, accurately populate "chapter_title" with the name of the chapter/document it was derived from!
 4. CRITICAL: "chapter_title" is where the chapter name goes. NEVER put chapter names in "section_name"! "section_name" MUST strictly be the configured blueprint section name (e.g. "Section A: Multiple Choice Questions").`
-    : '';
+    : '') + allPagesRule;
 
   const blueprintMandate = hasSections
     ? `=== STRICT BLUEPRINT & SECTION CONFIGURATION MANDATE ===
@@ -964,17 +967,25 @@ Whenever ANY question (whether 'picture_based', 'mcq', 'short_answer', or 'fill_
 
 Read the attached PDF document(s) carefully and generate the JSON array:`;
 
-  const inlineParts = items.map((it) => ({
-    inlineData: {
-      data: it.buffer.toString('base64'),
-      mimeType: it.mimeType || 'application/pdf',
-    },
-  }));
+  const labeledParts: any[] = [prompt];
+  items.forEach((it, idx) => {
+    labeledParts.push(`\n=== ATTACHED PDF DOCUMENT ${idx + 1}: "${it.fileName || `Document ${idx + 1}`}" (READ ALL PAGES OF THIS DOCUMENT) ===\n`);
+    labeledParts.push({
+      inlineData: {
+        data: it.buffer.toString('base64'),
+        mimeType: it.mimeType || 'application/pdf',
+      },
+    });
+  });
 
-  const result = await generateContentWithFallback([
-    prompt,
-    ...inlineParts,
-  ]);
+  const result = await generateContentWithFallback(
+    labeledParts,
+    {
+      temperature: isVerbatim ? 0 : 0.2,
+      maxOutputTokens: 8192,
+    },
+    config.preferredModel
+  );
 
   const rawText = result.response.text().trim();
   const jsonText = rawText
@@ -1124,89 +1135,92 @@ export async function extractQuestionPaperFromMedia(
   customInstructions?: string,
   preferredModel?: string
 ): Promise<ExtractedRawPaperResult> {
-  const inlineParts = items.map((it) => ({
-    inlineData: {
-      data: it.buffer.toString('base64'),
-      mimeType: it.mimeType || 'image/jpeg',
-    },
-  }));
+  console.log(
+    `[Extract Media] Analyzing ${items.length} file(s): ${items
+      .map((i) => `${i.fileName} (${i.mimeType}, ${i.buffer.length} bytes)`)
+      .join(', ')} | preferredModel=${preferredModel || GEMINI_MODEL}`
+  );
+  const prompt = `You are a STRICT, ZERO-HALLUCINATION OCR & Examination Paper Transcriber.
+Your ONLY job is to read EVERY SINGLE attached image and EVERY SINGLE page of EVERY attached PDF, and transcribe what is ACTUALLY written/printed in them AS-IT-IS.
 
-  const prompt = `You are a world-class academic examination transcriber and OCR expert specialized in school exam papers (including Pre-Primary, Nursery, L.K.G, U.K.G, Primary, and High School handwritten tests, worksheets, and printed papers).
-Analyze the provided handwritten, photographed, or scanned document(s) with 100% ZERO-ERROR precision.
+=== STRICT ANTI-HALLUCINATION & ZERO-INVENTION MANDATE ===
+1. NEVER invent, fabricate, guess, or add ANY question from your own mind or general knowledge.
+2. EVERY single question in your output MUST come directly and strictly from the attached image(s) / PDF(s).
+3. If an uploaded file has handwritten or printed questions, transcribe them WORD-FOR-WORD, NUMBER-FOR-NUMBER, SYMBOL-FOR-SYMBOL AS-IT-IS.
+4. DO NOT rephrase, replace, or substitute questions with other questions.
 
-CRITICAL OCR & VERBATIM TRANSCRIPTION GUIDELINES (ZERO-ERROR MANDATE):
-1. ACCURATE HANDWRITING DECIPHERING & SPELLING:
-   - Carefully decipher handwritten text, cursive handwriting, and teacher notes without substituting or misreading letters.
-   - For phonics / word family questions (e.g. "Write the four 'ill' sound words", "at sound words", "ee sound words"): recognize phonics patterns accurately. Do not confuse 'ill' with roman numbers or 'all'.
-   - Accurately transcribe bilingual Hindi and English text with correct Devanagari Unicode spelling (e.g. पंखा - Fan, चावल - _______, भोर - _______, सुबह - _______, कोमल - Komal).
-   - If a word is crossed out or corrected by the teacher in the original image (e.g. "four" written over another word), transcribe the intended final corrected word.
+=== MANDATORY ALL-IMAGES & ALL-PAGES COVERAGE ===
+- Total attached files: ${items.length}.
+- You MUST carefully inspect EVERY SINGLE attached image (Image 1, Image 2, Image 3, ..., Image ${items.length}) and EVERY SINGLE PAGE inside any attached PDF (Page 1, Page 2, Page 3, ... up to the last page).
+- NEVER stop after the first image or first page! Collect ALL questions across ALL uploaded images and ALL PDF pages in exact sequential order.
 
-2. QUESTION-CUM-ANSWER (SOLVE-INSIDE-PAPER) & BLANK SPACES FORMATTING:
-   - For Kindergarten (KG/UKG/LKG) and Primary worksheets, kids solve the paper directly on the sheet.
-   - Every single answer spot MUST have a distinct, generous blank space: "_______".
-   - If a question asks for N items (e.g. "Write the four 'ill' sound words"), generate EXACTLY N distinct blank underlines:
-     "_______   _______\n_______   _______"
-   - If sub-items have prompts (e.g. "Book - Books", "Pen - _______", "Tiger - _______", "Animal - _______"), keep every sub-item on its own line with matching "_______" so kids have enough room to write on the paper!
-   - For pattern sequence questions (e.g. "^ V ^ V", "M W M W", "■ ■ ■ ■"), transcribe the exact symbols followed by the exact number of blanks requested (e.g. "(i) ^ V ^ V   _______   _______   _______").
+=== TRANSCRIPTION & FORMATTING RULES ===
+1. HANDWRITING & BILINGUAL ACCURACY:
+   - Decipher handwritten and printed text carefully without misreading letters or digits.
+   - Transcribe Hindi/Devanagari and English text accurately in clean Unicode.
+   - If a word is crossed out and corrected in the original image, transcribe only the intended final word.
 
-3. HEADER METADATA DETECTION:
-   - "school_name": Detected school / institute name if explicitly visible, otherwise null.
-   - "exam_title": Detected terminal title (e.g. "1st Terminal Examination", "2nd Terminal Examination", "3rd Terminal Examination", "Annual Examination", "Class Assessment").
-   - "class_name": Detected class or grade (e.g. "U.K.G", "L.K.G", "Nursery", "Class 1", "Class 2").
-   - "subject_name": Detected subject (e.g. "English", "Hindi", "Mathematics", "EVS", "Science").
-   - "total_marks": Full marks (F.M.) as a number (e.g. 20, 25, 50). If stated as "F.M- 20 Marks", extract 20.
-   - "time_allowed": Time allowed (e.g. "45 Mins", "1 Hour") or standard duration.
-   - "date": Formatted date string (e.g. "20/11/2026") or null.
-   - "instructions": Standard test instructions.
+2. BLANK SPACES FOR SOLVE-ON-PAPER:
+   - Preserve blank lines/underlines using "_______" where answers are meant to be written.
+   - Keep each sub-item (e.g. (i), (ii), a., b., or word pairs) on its own line ("\\n") exactly as shown in the source.
+   - For arithmetic/division problems, preserve the exact numbers and notation as written in the source.
 
-4. ACCURATE MARKS RECONSTRUCTION:
-   - Preserve circled marks next to each question, e.g. (3), (2), [3], [2].
-   - Ensure individual question marks sum up correctly to the total marks.
-
-5. SINGLE-PAGE & 20-MARKS CLASS TEST OPTIMIZATION:
-   - For standard 10-25 marks tests (e.g. F.M. 20 Marks, weekly/terminal test from a single notebook page):
-     - DO NOT invent unnecessary artificial section names like "Section A", "Section B" unless explicitly written on the paper. Set "section_name": null so the paper renders seamlessly without bulky section banners.
-     - For math / division questions (e.g. Divide: 2 ) 98 (, 3 ) 972 (, 5 ) 7380 (): Keep the format clean and verbatim:
-       "Divide (÷) :\n(i) 2 ) 98 (\n(ii) 3 ) 972 (\n(iii) 4 ) 48 (\n(iv) 5 ) 7380 (\n(v) 6 ) 386 ("
-     - Keep question text crisp and structured so that small 20-mark tests fit completely onto a SINGLE A4 PAGE when printed/downloaded as PDF.
-
-6. VERIFICATION STEP BEFORE RETURNING JSON:
-   - Verify every character of Hindi and English text for absolute spelling accuracy.
-   - Verify that all questions (1., 2., 3., 4., 5...) from all uploaded pages are captured completely without skipping any question.
-   - Format cleanly in valid JSON matching the exact schema.
+3. HEADER & MARKS DETECTION:
+   - "school_name": School/institute name ONLY if visible in the uploaded files, otherwise null.
+   - "exam_title": Exam/terminal name if visible (e.g. "1st Terminal Examination", "2nd Terminal Examination", "3rd Terminal Examination", "Annual Examination"), otherwise null.
+   - "class_name": Class/grade ONLY if visible in the uploaded files, otherwise null.
+   - "subject_name": Subject ONLY if visible in the uploaded files, otherwise null.
+   - "total_marks": Numeric full marks if visible in the uploaded files, otherwise sum of extracted question marks.
+   - "time_allowed": Time allowed if visible, otherwise null.
+   - "date": Date if visible, otherwise null.
+   - "instructions": Instructions if visible, otherwise null.
+   - Preserve exact marks shown next to each question in "marks".
+   - Set "section_name": null unless an explicit section heading (like "Section A") is written on the paper.
 
 ${customInstructions ? `USER CUSTOM INSTRUCTIONS:\n${customInstructions}\n` : ''}
 
-RETURN STRICTLY A JSON OBJECT MATCHING THIS SCHEMA:
+RETURN STRICTLY A VALID JSON OBJECT MATCHING THIS EXACT SCHEMA (DO NOT COPY PLACEHOLDER TEXT — REPLACE WITH ACTUAL CONTENT FROM THE ATTACHED FILES):
 {
   "header": {
-    "school_name": null,
-    "exam_title": "1st Terminal Examination",
-    "class_name": "U.K.G",
-    "subject_name": "English",
-    "total_marks": 20,
-    "time_allowed": "45 Mins",
-    "date": "20/11/2026",
-    "instructions": "1. Attempt all questions.\\n2. Write answers clearly in the spaces provided."
+    "school_name": "<string or null>",
+    "exam_title": "<string or null>",
+    "class_name": "<string or null>",
+    "subject_name": "<string or null>",
+    "total_marks": 0,
+    "time_allowed": "<string or null>",
+    "date": "<string or null>",
+    "instructions": "<string or null>"
   },
   "questions": [
     {
       "section_name": null,
       "sub_section": null,
-      "type": "fill_blank",
-      "question_text": "Write the singular to plural:\\nBook - Books\\nPen - _______\\nTiger - _______\\nAnimal - _______",
+      "type": "short_answer",
+      "question_text": "<exact verbatim question text from attached image/PDF>",
       "options": null,
-      "answer_text": "Pen - Pens, Tiger - Tigers, Animal - Animals",
-      "marks": 3,
+      "answer_text": "<correct answer>",
+      "marks": 1,
       "difficulty": "easy"
     }
   ]
 }`;
 
+  const labeledParts: any[] = [prompt];
+  items.forEach((it, idx) => {
+    labeledParts.push(`\n=== ATTACHED FILE ${idx + 1} OF ${items.length}: "${it.fileName || `Image/Page ${idx + 1}`}" — READ & TRANSCRIBE EVERY QUESTION ON THIS FILE/PAGE ===\n`);
+    labeledParts.push({
+      inlineData: {
+        data: it.buffer.toString('base64'),
+        mimeType: it.mimeType || 'image/jpeg',
+      },
+    });
+  });
+
   const result = await generateContentWithFallback(
-    [prompt, ...inlineParts],
+    labeledParts,
     {
-      temperature: 0.1,
+      temperature: 0,
+      maxOutputTokens: 8192,
       responseMimeType: 'application/json',
     },
     preferredModel
