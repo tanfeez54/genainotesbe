@@ -751,11 +751,11 @@ export async function generateQuestionsDirectFromPdf(
   const hasSections = Boolean(config.sections && config.sections.length > 0);
   const sectionsDesc = hasSections
     ? config.sections!
-        .map(
-          (s, idx) =>
-            `Section ${idx + 1}: "${s.section_name}"${s.sub_section ? ` (Subsection / Part: "${s.sub_section}")` : ''}${s.instructions ? ` (Instructions: "${s.instructions}")` : ''} -> Exactly ${s.count} question(s) of type "${s.type}" (${s.marks_per_question} mark(s) each, difficulty: ${s.difficulty || 'medium'})`
-        )
-        .join('\n')
+      .map(
+        (s, idx) =>
+          `Section ${idx + 1}: "${s.section_name}"${s.sub_section ? ` (Subsection / Part: "${s.sub_section}")` : ''}${s.instructions ? ` (Instructions: "${s.instructions}")` : ''} -> Exactly ${s.count} question(s) of type "${s.type}" (${s.marks_per_question} mark(s) each, difficulty: ${s.difficulty || 'medium'})`
+      )
+      .join('\n')
     : 'Extract all available questions organized into appropriate logical sections (Section A: MCQs, Section B: Short Answer, Section C: Long Answer, etc.)';
 
   const allPagesRule = `\n=== MANDATORY ALL-PAGES PDF COVERAGE RULE (CRITICAL) ===
@@ -1162,13 +1162,16 @@ Your ONLY job is to read EVERY SINGLE attached image and EVERY SINGLE page of EV
 2. BLANK SPACES FOR SOLVE-ON-PAPER:
    - Preserve blank lines/underlines using "_______" where answers are meant to be written.
    - Keep each sub-item (e.g. (i), (ii), a., b., or word pairs) on its own line ("\\n") exactly as shown in the source.
+   - For Nursery/LKG/UKG "What comes after / before / between" items (e.g. "1 -", "8 -", "____ 20"), transcribe each item clearly with "_______" (e.g. "1 - _______", "_______ 20").
+   - For counting / alphabet grids (e.g. "Write the counting 51 to 70"), preserve the starting number(s) and exact count of "_______" blanks.
    - For arithmetic/division problems, preserve the exact numbers and notation as written in the source.
 
 3. MATCH THE FOLLOWING QUESTIONS:
    - Whenever any question asks to match items (e.g. "Match the following", "Match Column A with Column B", "मिलान कीजिए", "सही जोड़े बनाइए"):
      - Set "type": "match_the_following".
      - Set "question_text" to ONLY the instruction heading (e.g. "Match the following:").
-     - Set "options": { "column_a": ["left item 1", "left item 2", ...], "column_b": ["right item 1", "right item 2", ...] } with the exact items from Left and Right columns!
+     - NEVER leave "options" empty or null! Even if the items are numbers, alphabets, dots, shapes, or drawings, transcribe EVERY left-side item into "column_a" and EVERY right-side item into "column_b":
+       "options": { "column_a": ["left 1", "left 2", ...], "column_b": ["right 1", "right 2", ...] }
 
 4. HEADER & MARKS DETECTION:
    - "school_name": School/institute name ONLY if visible in the uploaded files, otherwise null.
