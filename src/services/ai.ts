@@ -17,14 +17,18 @@ export async function generateContentWithFallback(
   const models = [
     preferredModel,
     process.env.GEMINI_MODEL,
-    'gemini-3.8-flash',
-    'gemini-2.5-flash',
-    'gemini-3.7-flash',
-    'gemini-3.6-flash',
-    'gemini-3.5-flash',
-    'gemini-4-hydrogen',
     'gemini-3.5-flash-lite',
+    'gemini-3.5-flash',
+    'gemini-3.6-flash',
+    'gemini-3.7-flash',
+    'gemini-3.8-flash',
+    'gemini-4-hydrogen',
+    'gemini-4-argon',
+    'gemini-4-carbon',
+    'gemini-4-neon',
+    'gemini-2.5-flash',
     'gemini-2.5-pro',
+    'gemini-3.1-flash-lite',
   ].filter(Boolean) as string[];
   const uniqueModels = Array.from(new Set(models));
 
@@ -1135,11 +1139,6 @@ export async function extractQuestionPaperFromMedia(
   customInstructions?: string,
   preferredModel?: string
 ): Promise<ExtractedRawPaperResult> {
-  console.log(
-    `[Extract Media] Analyzing ${items.length} file(s): ${items
-      .map((i) => `${i.fileName} (${i.mimeType}, ${i.buffer.length} bytes)`)
-      .join(', ')} | preferredModel=${preferredModel || GEMINI_MODEL}`
-  );
   const prompt = `You are a STRICT, ZERO-HALLUCINATION OCR & Examination Paper Transcriber.
 Your ONLY job is to read EVERY SINGLE attached image and EVERY SINGLE page of EVERY attached PDF, and transcribe what is ACTUALLY written/printed in them AS-IT-IS.
 
@@ -1165,7 +1164,13 @@ Your ONLY job is to read EVERY SINGLE attached image and EVERY SINGLE page of EV
    - Keep each sub-item (e.g. (i), (ii), a., b., or word pairs) on its own line ("\\n") exactly as shown in the source.
    - For arithmetic/division problems, preserve the exact numbers and notation as written in the source.
 
-3. HEADER & MARKS DETECTION:
+3. MATCH THE FOLLOWING QUESTIONS:
+   - Whenever any question asks to match items (e.g. "Match the following", "Match Column A with Column B", "मिलान कीजिए", "सही जोड़े बनाइए"):
+     - Set "type": "match_the_following".
+     - Set "question_text" to ONLY the instruction heading (e.g. "Match the following:").
+     - Set "options": { "column_a": ["left item 1", "left item 2", ...], "column_b": ["right item 1", "right item 2", ...] } with the exact items from Left and Right columns!
+
+4. HEADER & MARKS DETECTION:
    - "school_name": School/institute name ONLY if visible in the uploaded files, otherwise null.
    - "exam_title": Exam/terminal name if visible (e.g. "1st Terminal Examination", "2nd Terminal Examination", "3rd Terminal Examination", "Annual Examination"), otherwise null.
    - "class_name": Class/grade ONLY if visible in the uploaded files, otherwise null.
